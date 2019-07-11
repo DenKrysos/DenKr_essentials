@@ -1,0 +1,170 @@
+
+
+
+#define NO_DENNTRISC_C_FUNCTIONS
+
+
+
+#include <string.h>
+#include <time.h>
+#include <ctype.h>
+#include <linux/types.h>
+#include <sys/types.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <stdbool.h>
+#include <limits.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
+
+#include "DennTrisC_globalsettings.h"
+#include "DennTrisC_base.h"
+#include "remainder.h"
+#include "debug.h"
+
+
+#include "remainder_extended.h"
+#include "socket_stuff.h"
+
+#include "head/DennTrisC_extern_functions.h"
+
+
+
+extern int handleHelp(int argc, char **argstart);
+
+
+
+
+//"Eleganter" Control+C Handler
+static void ctrl_c(){
+	printf ("Exiting on User Desire.\n");
+	exit (0);
+}
+
+
+
+
+//TODO (still... -.-): Something like a Manual-print -- RTFM!
+/* usage */
+void usage(char *name){
+	printf("TODO: Info-Section\n");
+	printf ("%s - C Part of the DennTris Collection. This controls the Robots-Movement.\n", name);
+//  printf ("Usage: %s [-i interface] [-l] [-v]\n", name);
+//  printf ("    -i    interface to sniff on\n");
+//  printf ("    -l    list available interfaces\n");
+//  printf ("    -v    print verbose info\n\n");
+  exit (1);
+}
+
+
+
+
+
+/* Globally defined in DennTrisC_Global_Variables.c
+ * unsigned char do_debug = 0;
+ * char loglvl;
+ * char ansi_escape_use;
+ * int argsc;
+ */
+//int main(int argc, char *argv[]) {
+int main(int argc_init, char **argv_init){
+	system("reset >/dev/null 2>&1");
+	system("clear >/dev/null 2>&1");
+	int err;
+
+	/* setup signal handler so Control-C will gracefully exit */
+	signal(SIGINT, ctrl_c);
+
+	// Get the System-Endianess
+	check_system_endianess(&system_endianess);
+
+	/* argsc and args are globally defined in {Program-Name}_Global-Variables.c as:
+	 * int argsc;
+	 * char **args;
+	 * They get a Value here.
+	 */
+	argsc=argc_init;
+	args=argv_init;
+	//Just to set up, if the Programm should use ANSI Escape on the Output Console. For Things like Colored Output...
+	//defined as a macro in remainder.h
+	SET_ansi_escape_use;
+
+	//----------------------------------------------------------------------------------------------
+	//----------------------------------------------------------------------------------------------
+	//----------------------------------------------------------------------------------------------
+	//----------------------------------------------------------------------------------------------
+
+
+
+
+	int curargc=argc_init-1;//The currently processed argc
+	char **curargv=argv_init+1;//The currently processed argv
+
+	if(curargc>0) {
+	if (strcmp(*curargv, "") == 0){
+		if(curargc>1){
+
+		} else {
+			printf("To few Arguments!\n");
+			return MAIN_ERR_FEW_CMDS;
+		}
+	} else if (strcmp(*(curargv), "usage") == 0){
+		printf("No Arguments passed!\n\n");usage("DennTrisC");
+	} else if (strcmp(*(curargv), "manual") == 0){
+		printf("No Arguments passed!\n\n");usage("DennTrisC");
+	} else if (strcmp(*(curargv), "rtfm") == 0){
+		printf("No Arguments passed!\n\n");usage("DennTrisC");
+	} else if (strcmp(*(curargv), "help") == 0){
+		err=handleHelp(curargc, curargv);
+	} else if (strcmp(*(curargv), "debug") == 0){//Debugging or Monitoring
+		curargc--;
+		curargv++;
+		err = handleDebug(curargc, curargv);
+		if (err < 0) {
+			printf("\nUnexpected Error on Debugging Function!\n\n");
+			return err;
+		} else {
+			switch (err) {
+			case 0:
+				return 0;
+				break;
+			case MAIN_ERR_BAD_CMDLINE:
+//				printf("\n   \n\n");
+				return MAIN_ERR_BAD_CMDLINE;
+				break;
+			case MAIN_ERR_FEW_CMDS:
+//				printf("\nNot enough Arguments after »help« passed\n\n");
+				return MAIN_ERR_FEW_CMDS;
+				break;
+			case NETWORK_NO_CONNECTION:
+				printf("Couldn't set up Network Connection. Terminating Program.\n\n");
+				return NETWORK_NO_CONNECTION;
+				break;
+			default:
+				fprintf(stderr, "\nUnsupported error-code from the debug-Handler delivered!\n\n");
+				return MAIN_ERR_STD;
+				break;
+			}
+		}
+	} else {usage("DennTrisC");}
+	} else {//printf("No Arguments passed!\n\n");usage("DennTrisC");
+		dauerbetrieb(curargc, curargv);
+	}
+
+
+
+
+//    err = fileOperation();
+    //TODO: Error Handling
+//    err = fileOperationChained();
+    //TODO: Error Handling
+	pthread_exit(NULL);
+	printf("\nDennTrisC: Exiting with Error-Code: %d\n",err);
+	return 0;
+}
+
+
+
+
+#undef NO_DENNTRISC_C_FUNCTIONS
