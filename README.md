@@ -16,6 +16,7 @@ worth mentioning:
 - A Macro/Function set to read out "Time" from different clocks, in different precisions or formats
 - Several Sort & Search Algorithms
 - "Function Creator / FanOut"  - Create Functions out of Macros. For example to unify the Place, where a Function Prototype is declared to exactly one position. Or Fan-Out multiple Functions with some common Code, but also Distinctions in them. Or dynamically create several functions, depending on "Macro Inputs"
+- Aid for File-Handling, e.g. Config-File definition and read
 - Some additional "auxiliary" functions (Framework Initialization, check system-endianess, helpful debug-print, macro/function overloading and whatnot)
 
 This collection is nicely integrated into the Framework "DenKrement"
