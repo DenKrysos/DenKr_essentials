@@ -20,3 +20,6 @@ worth mentioning:
 - Some additional "auxiliary" functions (Framework Initialization, check system-endianess, helpful debug-print, macro/function overloading and whatnot)
 
 This collection is nicely integrated into the Framework "DenKrement"
+
+
+As a NOTE: I personally use <Eclipse> as IDE. With this you can Link to one and the same Copy of "DenKr_essentials" from different Projects.
