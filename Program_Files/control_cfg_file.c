@@ -308,9 +308,16 @@ int config_file_read_variadic_(char *cfgf_path, int argc, enum DenKr_essentials_
 				current_key=current_key->next;
 			}
 			printf(" <- Inquired File: %s\n\n",cfgf_path);
+			printf("Proposal: Delete File (Backup and afterwards merge your changed settings) and let me create a default one. Hopefully I properly implemented the Default-Creation-Feature... ;oP (If so, this will be automatically done during Startup and tells you that on the Terminal.)\n");
 		}
 
 		AllKeysFound:
+		if(fclose(cfgf)){
+			//printf("NOTICE: Config-File couldn't be closed successfully!");
+		}else{
+			err=FILE_ERR_NOT_CLOSED;
+			//printf("...config-file read successfully!\n");
+		}
 
 		#undef CFGF_RD_KEY_FOUND
 		return err;

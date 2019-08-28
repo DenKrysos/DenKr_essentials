@@ -30,6 +30,7 @@ struct DenKr_ContextBroker_ThreadArgPassing {
 	DenKr_InfBroker_SockToBrok* SockToBrok;
 	DenKr_essentials_ThreadID ownID;
 	DenKr_essentials_ThreadID mainThreadID;
+	char contbrok_debug;
 };
 
 #define DENKR_CONTEXTBROKER_START_THREAD \
@@ -48,6 +49,7 @@ struct DenKr_ContextBroker_ThreadArgPassing {
 									ThreadArgPass->SockToBrok=&SockToBrok;\
 									ThreadArgPass->mainThreadID=TO_DEFINE__DENKR_MAIN_THREAD_ID;\
 									ThreadArgPass->ownID=TO_DEFINE__DENKR_CONTEXTBROKER_THREAD_ID;\
+									ThreadArgPass->contbrok_debug=cfg_main.contextbroker_debugging;\
 							)\
 	/*switch(return_macro_denkr_start_thread_0){}//Currently don't care about "Return" of the Macro*/\
 	}

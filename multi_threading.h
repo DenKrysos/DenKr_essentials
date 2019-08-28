@@ -23,6 +23,20 @@
 
 #include "DenKr_essentials/Types/multi_threading_basicTypes.h"
 
+#if defined(DENKR_ESSENTIALS__DL_LIBS__NONE)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__MAIN_APP)
+	#include "plugins/export/plugins_DenKr_essentials__common.h"
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_PREDEFINED)
+	//Be cautious with the Resource-Linking (Eclipse) and include-paths (compiler arguments), when compiling a Plugin with set global Value
+	#include "plugins_DenKr_essentials__common.h"
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_GENERIC)
+	//Generic Plugins/Modules at least need to know the "generic"-role and stuff like the working-modes
+	#include "plugins_DenKr_essentials__common.h"
+#else
+	#pragma error "ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+	ERROR"ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+#endif
+
 
 
 
@@ -295,7 +309,88 @@ struct thread_generic_module_start_ThreadArgPassing {
 	free(arg);
 #define DenKr_generic_module_thread__startPreamble \
 	DenKr_generic_module_thread__startPreamble_noPrint \
-	printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"Thread:");printf(" "STRINGIFY(C_PREF)" started.\n");
+	printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"Thread:");printf(" "STRINGIFY(C_PREF)" started. (ThreadID #%d)\n",ownID);
+//--------------------------------------------------------------------------------------------------//
+////////////////////////////////
+//////// Predefined Role DLL-Threads
+////////////////////////////////
+//
+// Predefined Role DLL-Threads are always started with this: (which can be individualized via the 'void* additional')
+//   How this is filled has to be manually done, if used. This is to be done in the File (e.g.) "DenKrement/src/plugins/export/plugins_export.h" (here the Folder 'src' is on the same Hierarchy-Level as the 'DenKr_essentials'-Folder)
+//   An example for this can be found inside "DenKrement"
+struct thread_predefined_module_start_ThreadArgPassing{
+	ThreadManager* thrall;//The ThreadManager. Contains the two Arrays: pthread* allThreads: Mainly to start the listen thread inside. DenKr_ThreadSpawned* runningThreads: Passed to record the Listening-Thread as running;
+	PluginManager* plugman;
+	struct ShMemHeader *shmem_headers;//An Array, own ShMem-Header. Communication Alternative to the Context-Broker
+	DenKr_essentials_ThreadID ownID;
+	DenKr_essentials_ThreadID mainThreadID;
+	void* ContextBrokerInterface;
+	void* additional;//Can be used for individual stuff. To read it out: Just do it before my "__startPreamble" Macro (if used). TODO: Adjust my Plugin-Start-Thread routine to pass something to it.
+	int additional_size;
+};
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// Additional Arg preparation
+struct DenKr_Thread_start_predefineds__PREP_ADDARGS_Meta{
+	void* addArgs;
+	long long addarg_siz;
+};
+//   A Macro, which prepares the additional Arguments to pass. With this, the Args are prepared to pass them to the function "DenKr_Thread_start_predefineds"
+//TODO: A Safety Check could be introduced, which adds a check from the sizeof the defined structure (in "plugins_export.h") again the macro, which fills in values (i.e. check the written addresses). Possibly one could define a smaller struct (or even empty) but nonetheless write some filling-in into the macro. This would write out of bounds. This won't be a problem for predefined plugins "in between" because this malicious writes would be overwritten again by succedding ones (surely, depending on sufficient required memory size), but by the "last loaded plugin" in the row, such a malicious behaviour would write out of bounds and screw things in any case...
+#define _DenKr_Thread_start_predefineds__PREP_ADDARGS__loopbody(i, ...) \
+	addarg_arr[i].addarg_siz= sizeof(CONCAT(ARRAY_ENTRY(i,(DenKr_plugin_roles_ENTRIES)),__addArgs_struct));\
+	IF(EQUAL(i,0))( \
+	)IF(NOT_EQUAL(i,0))( \
+		addarg_arr[i].addArgs=addarg_arr[DEC(i)].addArgs+addarg_arr[DEC(i)].addarg_siz;\
+	)\
+	CONCAT(ARRAY_ENTRY(i,(DenKr_plugin_roles_ENTRIES)),__addArgs) ((*((CONCAT(ARRAY_ENTRY(i,(DenKr_plugin_roles_ENTRIES)),__addArgs_struct*))(addarg_arr[i].addArgs))))
+
+#define DenKr_Threads_start_predefineds__PREP_ADDARGS__SIZEOF__(ARG) +sizeof(CONCAT(ARG,__addArgs_struct))
+#define DenKr_Threads_start_predefineds__PREP_ADDARGS__SIZEOF_(...) \
+	IF(EQUAL(COUNT_VARARGS(__VA_ARGS__),0))(\
+	)IF(NOT_EQUAL(COUNT_VARARGS(__VA_ARGS__),0))(\
+		CALL_MACRO_X_FOR_EACH(DenKr_Threads_start_predefineds__PREP_ADDARGS__SIZEOF__,__VA_ARGS__)\
+	)
+
+#define DenKr_Thread_start_predefineds__PREP_ADDARGS_(A1,...) \
+	struct DenKr_Thread_start_predefineds__PREP_ADDARGS_Meta addarg_arr[DenKr_plugin_role__MAX];\
+	memset(addarg_arr,0,DenKr_plugin_role__MAX*sizeof(struct DenKr_Thread_start_predefineds__PREP_ADDARGS_Meta));\
+	addarg_arr[0].addArgs=malloc(sizeof(CONCAT(A1,__addArgs_struct)) DenKr_Threads_start_predefineds__PREP_ADDARGS__SIZEOF_(__VA_ARGS__));\
+	EVAL_SMALL(REPEAT(COUNT_VARARGS(A1,__VA_ARGS__), _DenKr_Thread_start_predefineds__PREP_ADDARGS__loopbody, DenKr_plugin_roles_ENTRIES))
+
+#define DenKr_Thread_start_predefineds__PREP_ADDARGS_EXPAND(...) \
+	{\
+	IF(EQUAL(COUNT_VARARGS(DenKr_plugin_roles_ENTRIES),0))(\
+		void* addarg_arr=NULL;\
+	)IF(NOT_EQUAL(COUNT_VARARGS(DenKr_plugin_roles_ENTRIES),0))(\
+		DenKr_Thread_start_predefineds__PREP_ADDARGS_(__VA_ARGS__)\
+	)
+#define DenKr_Thread_start_predefineds__PREP_ADDARGS DenKr_Thread_start_predefineds__PREP_ADDARGS_EXPAND(DenKr_plugin_roles_ENTRIES)
+// - - - - - - - - - - - - - - -
+// End-of-Code. Closes Scope & frees allocated Memory
+#define DenKr_Thread_start_predefineds__PREP_ADDARGS_EOC \
+	IF(EQUAL(COUNT_VARARGS(DenKr_plugin_roles_ENTRIES),0))(\
+		\
+	)IF(NOT_EQUAL(COUNT_VARARGS(DenKr_plugin_roles_ENTRIES),0))(\
+		free(addarg_arr[0].addArgs);\
+	)\
+	}
+//
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#define DenKr_predefined_module_thread__startPreamble_noPrint \
+	ThreadManager* thrall = (((struct thread_predefined_module_start_ThreadArgPassing *)arg)->thrall);\
+	PluginManager* plugman = (((struct thread_predefined_module_start_ThreadArgPassing *)arg)->plugman);\
+	struct ShMemHeader *shmem_headers = (((struct thread_predefined_module_start_ThreadArgPassing *)arg)->shmem_headers);\
+	DenKr_essentials_ThreadID ownID = (((struct thread_predefined_module_start_ThreadArgPassing *)arg)->ownID);\
+	DenKr_essentials_ThreadID mainThreadID = (((struct thread_predefined_module_start_ThreadArgPassing *)arg)->mainThreadID);\
+	DenKr_InfBroker_Iface_Client* InfBrokerIface = (DenKr_InfBroker_Iface_Client*)(((struct thread_predefined_module_start_ThreadArgPassing *)arg)->ContextBrokerInterface);\
+	/*if(((struct thread_predefined_module_start_ThreadArgPassing *)arg)->additional){*/\
+	if(0<((struct thread_predefined_module_start_ThreadArgPassing *)arg)->additional_size){\
+		free(((struct thread_predefined_module_start_ThreadArgPassing *)arg)->additional);\
+	}\
+	free(arg);
+#define DenKr_predefined_module_thread__startPreamble \
+	DenKr_generic_module_thread__startPreamble_noPrint \
+	printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"Thread:");printf(" "STRINGIFY(C_PREF)" started. (ThreadID #%d)\n",ownID);
 //
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 //--------------------------------------------------------------------------------------------------//
@@ -327,6 +422,9 @@ struct thread_generic_module_start_ThreadArgPassing {
 //----     (external)  -----------------------------------------------------------------------------//
 //--------------------------------------------------------------------------------------------------//
 //==================================================================================================//
+#define DENKR_THREAD_STARTTHREAD_PREDEFINED int DenKr_Thread_startThread_predefined(PluginManager* plugman, ThreadManager* thrall, DenKr_essentials_ThreadID mainThreadID, struct ShMemHeader *shmem_headers, DenKr_InfBroker_SockToBrok* SockToBrok, long long predefplug_roleid, long long predefplug_threadidx, void* additional_passed_arg, int addarg_siz, char* plugname)
+#define DENKR_THREAD_START_PREDEFINEDS int DenKr_Thread_start_predefineds(PluginManager* plugman, ThreadManager* thrall, DenKr_essentials_ThreadID mainThreadID, struct ShMemHeader *shmem_headers, DenKr_InfBroker_SockToBrok* SockToBrok, struct DenKr_Thread_start_predefineds__PREP_ADDARGS_Meta* addarg_arr)
+//----------------------------------------------------------------------------------------------------
 #ifndef NO_DENKR_ESSENTIALS_MULTI_THREADING_C_FUNCTIONS
 extern void ShMem_send_start(struct ShMemHeader *shmemh, ShMemMsgSize size, ShMemMsgType type);
 extern void ShMem_send_finish(struct ShMemHeader *shmemh);
@@ -352,6 +450,8 @@ extern int DenKr_ThreadManager_ExtractCompress_running_Threads(ThreadManager* th
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 extern int DenKr_Thread_startThread_generic(ThreadManager* thrall, struct PluginRoleGeneric* generic_plugin, DenKr_essentials_ThreadID mainThreadID, PluginManager* plugman, struct ShMemHeader *shmem_headers, DenKr_InfBroker_SockToBrok* SockToBrok, void* additional_passed_arg, int addarg_siz);
 extern int DenKr_Thread_start_generics(PluginManager* plugman, ThreadManager* thrall, DenKr_essentials_ThreadID mainThreadID, struct ShMemHeader *shmem_headers, DenKr_InfBroker_SockToBrok* SockToBrok);
+extern DENKR_THREAD_STARTTHREAD_PREDEFINED;
+extern DENKR_THREAD_START_PREDEFINEDS;
 #endif
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 //--------------------------------------------------------------------------------------------------//

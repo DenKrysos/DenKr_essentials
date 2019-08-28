@@ -71,6 +71,23 @@
 //#include "function_creator.h"
 //#include "getRealTime.h"
 //#include "Program_Files/P_Files_Path.h"
+//---------------------------------------------------------------------------------
+//TODO: Change this file-include to the proper one after rework like mentioned in this "DenKrement_threads.h"
+#include "DenKrement_threads.h"
+//----------------------------------------------------------------------------
+#if defined(DENKR_ESSENTIALS__DL_LIBS__NONE)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__MAIN_APP)
+	#include "plugins/export/plugins_DenKr_essentials__common.h"
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_PREDEFINED)
+	//Be cautious with the Resource-Linking (Eclipse) and include-paths (compiler arguments), when compiling a Plugin with set global Value
+	#include "plugins_DenKr_essentials__common.h"
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_GENERIC)
+	//Generic Plugins/Modules at least need to know the "generic"-role and stuff like the working-modes
+	#include "plugins_DenKr_essentials__common.h"
+#else
+	#pragma error "ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+	ERROR"ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+#endif
 //==================================================================================================//
 //==================================================================================================//
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -281,6 +298,7 @@ void DenKr_Thread_await_AllReady_ShMem(struct ShMemHeader *shmem_headers, DenKr_
 		//This shouldn't occur. Until after this "Ready-Procedure" not any other ShMem-Msg should be sent.
 		//So this switch is just for safety. And while we do this procedure just one time, at Program-Start
 		//we can spent this bit Time without getting any guilty conscience
+		//TODO: Incorrect Output
 		printfc(red,"Bug:");printf(" Received a different ShMem-Msg Type from \"Ready\" at the Initialization-of sdn_ctrl_com_thread_RYU.\n");
 		exit(MAIN_ERR_BUG);
 		break;
@@ -600,7 +618,7 @@ void DenKr_ThreadManager_init(ThreadManager** thrall,int basicThreads_c){
 	(*thrall)->allThreads=malloc(basicThreads_c*sizeof(*((*thrall)->allThreads)));
 	(*thrall)->runningThreads=malloc(basicThreads_c*sizeof(*((*thrall)->runningThreads)));
 //	memset(&(thrall->runningThreads_generic),0,sizeof(thrall->runningThreads_generic));
-	DenKr_ThreadSpawn_Tracking_Generic_Init(&((*thrall)->runningThreads_generic),basicThreads_c+1);
+	DenKr_ThreadSpawn_Tracking_Generic_Init(&((*thrall)->runningThreads_generic),basicThreads_c);
 	memset((*thrall)->allThreads,0,basicThreads_c*sizeof(*((*thrall)->allThreads)));
 	memset((*thrall)->runningThreads,0,basicThreads_c*sizeof(*((*thrall)->runningThreads)));
 }
@@ -743,7 +761,100 @@ int DenKr_Thread_start_generics(PluginManager* plugman, ThreadManager* thrall, D
 	return 0;
 }
 //--------------------------------------------------------------------------------------------------//
+////////////////////////////////
+//////// Predefined DLL-Threads
+////////////////////////////////
+//- Quick Working Notes: (How it is intended to work, noted Ideas prior to implementation)
+//Create a "create_argv" out of the 'Role_ENTRIES' to check which ones should be here and cycle over them.
+//Use the Plugman to see, which plugins are loaded (similarly to how already done in the individual macros)
+//	-> Load the ones present, show Warning (ERROR?) for the ones no fulfilling plugin is loaded.
+//For Thread Starting use the Thread-Start-Template Macro as done in the individual macros
+//For Argument passing as done for the generic plugins.
+//	A struct containing the default arguments and a pointer to another malloced struct for 'optional arguments'
+//		The plugin main needs to take care of the two free()s and read out of the cascaded arguments
+//The optional additional arguments cannot be automated (without restrictions)
+//	-> Thus, for every predefined Role, a struct definition is required for this args (if any) and a macro for how they are filled in
+//	-> In the plugin main, the readout of these needs to be handled manually
+//	-> The default stuff can be done via a macro in every predefined plugin equally. (the optional readout shall come before this macro, in order that the free()s can be included in the macro)
+//The function for starting every predefined plugin takes in these optional arg-passing macros to execute them (A Naming convention is required). These macro-names are generated via the Role_ENTRIES List and some suffix by concatenation.
+//- - - - - - - - - - - - - - - - - - - - - -
+	//#define GENERIC_PRINT_NAME temppr
+	//#define GENERIC_PRINT_TYPE
+	//#include "generic_print.h"
+//The optional args are not passed, but read from the "plugins_export.h" File. There defined as a macro for every predefined Plugin
+//
+//This one gets the Predefined Plugin Role ID (as defined in "plugins/export/plugins_DenKr_essentials__common.h" & the Thread-IDX (as defined in "DenKrement_Threads.h"), also the additional Args to pass to the Thread are handed over. As an addition the plugins name is passed, just for output in case of some discrepancy. This function fills in the Default-Arguments in any case and the optional arguments if any are passed (i.e. if no empty structure and a size of 0 are passed).
+DENKR_THREAD_STARTTHREAD_PREDEFINED//(long long predefplug_roleid, long long predefplug_threadidx, void* additional_passed_arg, int addarg_siz, char* plugname)
+{
+	int err;
+	if( FLAG_CHECK(((plugman->predef)[predefplug_roleid]).flags,DENKR_PLUGINS_ROLE_FLAG__ROLE_DEFINED) ){
+		if(((plugman->predef)[predefplug_roleid]).work_type == DenKr_plugin_working_type__thread){
+			DENKR_START_THREAD_PATTERN(false,
+				((plugman->predef)[predefplug_roleid]).hook,
+				predefplug_threadidx,
+				PTHREAD_CREATE_JOINABLE,
+					struct thread_predefined_module_start_ThreadArgPassing* ThreadArgPass;
 
+					ThreadArgPass = malloc(sizeof(*ThreadArgPass));
+					memset(ThreadArgPass,0,sizeof(*ThreadArgPass));
+
+					ThreadArgPass->thrall=thrall;
+					ThreadArgPass->plugman=plugman;
+					ThreadArgPass->shmem_headers=shmem_headers;
+					ThreadArgPass->ownID=predefplug_threadidx;
+					ThreadArgPass->mainThreadID=mainThreadID;
+
+					ThreadArgPass->ContextBrokerInterface=malloc(sizeof(DenKr_InfBroker_Iface_Client));
+					memset(ThreadArgPass->ContextBrokerInterface,0,sizeof(DenKr_InfBroker_Iface_Client));
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->hidden).send_to_Broker=SockToBrok;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->hidden).ownID=predefplug_threadidx;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->FuncSend).sendStr=(InfBrok_FuncSendStr)DenKr_ContextBroker_sendInfo_Str;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->FuncRegConsumer).regSocket=(InfBrok_FuncRegListenMethod)DenKr_ContextBroker_register_Consumer_socket;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->FuncRegConsumer).regCallback=(InfBrok_FuncRegCallback)DenKr_ContextBroker_register_Consumer_callback;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->FuncRegProducer).regSocket=(InfBrok_FuncRegListenMethod)DenKr_ContextBroker_register_Producer_socket;
+					(((DenKr_InfBroker_Iface_Client*)(ThreadArgPass->ContextBrokerInterface))->FuncRegProducer).regCallback=(InfBrok_FuncRegCallback)DenKr_ContextBroker_register_Producer_callback;
+
+					if (0<addarg_siz){
+						ThreadArgPass->additional=malloc(addarg_siz);
+						ThreadArgPass->additional_size=addarg_siz;
+						memcpy(ThreadArgPass->additional,additional_passed_arg,addarg_siz);
+					}
+			)
+		}else{
+			CREATE_argv_CONST(print_worktypes, CALL_MACRO_X_FOR_EACH__LIST(STRINGIFY,DenKr_plugins_working_type_ENTRIES) )
+			printfc(yellow,"WARNING:");printf(" Loaded Module for Role \"%s\" is not of Working-Type \"Thread\" (%d), but of \"%s\" (%d).\n",
+				plugname,
+				DenKr_plugin_working_type__thread,
+				print_worktypes[((plugman->predef)[predefplug_roleid]).work_type],
+				((plugman->predef)[predefplug_roleid]).work_type
+			);
+		}
+	}else{
+		printfc(gray,"NOTE:");printf(" No Module loaded, to attend the Role \"%s\".\n",plugname);
+	}
+
+	return err;
+}
+
+//Here keep track over all predefined roles and their corresponding thread-indices. I.e. circle over all predefined role IDs and also pass their thread-indices and the gathers the additional arguments and passes them.
+DENKR_THREAD_START_PREDEFINEDS
+{
+	if(0<DenKr_plugin_role__MAX){
+		int i;
+		CREATE_argv_CONST(predef_v, CALL_MACRO_X_FOR_EACH__LIST(STRINGIFY,DenKr_plugin_roles_ENTRIES) )
+		long long plugin_roles[]={DenKr_plugin_roles_ENTRIES_};
+		long long thread_idc[]={DenKrement_Thread_Plugin_ENTRIES_};
+		for(i=0;i<DenKr_plugin_role__MAX;i++){
+			DenKr_Thread_startThread_predefined(plugman, thrall, mainThreadID, shmem_headers, SockToBrok, plugin_roles[i],thread_idc[i],addarg_arr[i].addArgs,addarg_arr[i].addarg_siz,predef_v[i]);
+		}
+	}
+
+	return 0;
+}
+
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// Additional Arg preparation
+//   A Set consisting of 2 Macros, working as "wrapper" for the function "DenKr_Thread_start_predefineds" is defined in the header-File
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 //--------------------------------------------------------------------------------------------------//
 //==================================================================================================//

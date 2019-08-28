@@ -61,6 +61,15 @@
 //==================================================================================================//
 
 
+#define WRITE_PLUGMAN_ERR(ERR,PLUGNUM) \
+	if(plugman->err){\
+		((PluginManager_err*)(plugman->err))->err=ERR;\
+		((PluginManager_err*)(plugman->err))->last_registered=PLUGNUM;\
+	}else{\
+		printfc(red,"ERROR:");printf(" Intended to write into Plugman.err, but that wasn't initialized, which it should be in that place... (File: %s | Line: %d) Please fix it. Exiting...\n",__FILE__,__LINE__);\
+		exit(STRUCT_ERR_DMG);\
+	}
+
 
 static void PluginHandler_init(PluginHandler** plughan) {
 	*plughan = malloc(sizeof(**plughan));
@@ -102,10 +111,12 @@ DENKR_PLUGIN_MANAGER_INIT_SIGNATURE {
 	memset((*plugman)->predef,0,temp_mem_size);
 	(*plugman)->generic_c=0;
 	(*plugman)->generic=NULL;
+	(*plugman)->err=NULL;
 	PluginHandler_init(&((*plugman)->PluginHandler));
 }
 
 
+//TODO: DoubleCheck. Did I forget to free the malloced "role"&"work_type_generic" for generic plugins? I think so...
 DENKR_PLUGIN_MANAGER_FREE_SIGNATURE {
 	PluginHandler_free(&((*plugman)->PluginHandler));
 	if((*plugman)->predef){
@@ -125,21 +136,79 @@ DENKR_PLUGIN_MANAGER_FREE_SIGNATURE {
 }
 
 
-
-
-DENKR_PLUGIN_MANAGER_REG_ROLE_PREDEF
+DENKR_PLUGIN_MANAGER_REM_LAST_GENERIC
 {
-	FLAG_SET((plugman->predef)[role].flags,DENKR_PLUGINS_ROLE_FLAG__ROLE_DEFINED);
-	(plugman->predef)[role].work_type=work_type;
-	(plugman->predef)[role].hook=hook;
+	int i;
+	if(1<plugman->generic_c){
+		struct PluginRoleGeneric* oneBeforeLast;
+		oneBeforeLast=plugman->generic;
+		for(i=2;i<plugman->generic_c;i++){
+			oneBeforeLast=oneBeforeLast->next;
+		}
+		if((oneBeforeLast->next)->role)
+			free((oneBeforeLast->next)->role);
+		if((oneBeforeLast->next)->work_type_generic)
+			free((oneBeforeLast->next)->work_type_generic);
+		free((oneBeforeLast->next));
+		oneBeforeLast->next=NULL;
+		plugman->generic_c--;
+	}else if(0<plugman->generic_c){//Here it is exactly 1. We have to restore the "Initial Case", i.e. empty linked list and thus handle the "first" entry
+		struct PluginRoleGeneric* last;
+		last=plugman->generic;
+		if(last->role)
+			free(last->role);
+		if(last->work_type_generic)
+			free(last->work_type_generic);
+		free(plugman->generic);
+		plugman->generic_c=0;
+	}else if(-1<plugman->generic_c){//Exactly 0. Nothing to do
+	}else{//Lower than 0. Must be an error.
+		printfc(red,"ERROR:");printf(" Bug detected. During Removing of an entry from the generic plugins Linked List. Malformed Data-Structure detected. Nothing to do about it. Exit...\n");
+		exit(STRUCT_ERR_DMG);
+	}
 }
 
 
 
 
+DENKR_PLUGIN_MANAGER_REG_ROLE_PREDEF
+{
+#define ROLEENTRIES_FIRST ARRAY_ENTRY(0,(DenKr_plugin_roles_ENTRIES_))
+#define ROLEENTRIES_LAST ARRAY_ENTRY(DEC(COUNT_VARARGS(DenKr_plugin_roles_ENTRIES_)),(DenKr_plugin_roles_ENTRIES_))
+	//Plausibility Checks
+	//Check if role is generic
+	if(role==DenKr_plugin_role__generic){
+		WRITE_PLUGMAN_ERR(DENKR_PLUGMAN_ERR__REGPREDEF_BUTIS_GEN,DenKr_plugin_role__MAX)
+		return;
+	}else if(ROLEENTRIES_FIRST>role || ROLEENTRIES_LAST<role){
+		WRITE_PLUGMAN_ERR(DENKR_PLUGMAN_ERR__INVALID_ROLENUM,DenKr_plugin_role__MAX)
+		return;
+	}
+	WRITE_PLUGMAN_ERR(DENKR_PLUGMAN_ERR__NO_ERROR,role)
+
+	//Actual Registration
+	FLAG_SET((plugman->predef)[role].flags,DENKR_PLUGINS_ROLE_FLAG__ROLE_DEFINED);
+	(plugman->predef)[role].work_type=work_type;
+	(plugman->predef)[role].hook=hook;
+#undef ROLEENTRIES_FIRST
+#undef ROLEENTRIES_LAST
+}
+
+
+
+
+//ToDo: Pass back the number of the registered Plugin (i.e. the position inside the linked list)
 DENKR_PLUGIN_MANAGER_REG_ROLE_GENERIC
 {
 	int i;
+
+	//First, check if the Role Number is 'generic'. That's all we have to check here. If that is not true, everything else is of no significance, since that just is the error. If it's generic, it is fine, since this only one valid value.
+	if(roletype!=DenKr_plugin_role__generic){
+		WRITE_PLUGMAN_ERR(DENKR_PLUGMAN_ERR__REGGEN_BUTIS_PREDEF,DenKr_plugin_role__MAX)
+		return;
+	}
+	WRITE_PLUGMAN_ERR(DENKR_PLUGMAN_ERR__NO_ERROR,roletype)
+
 	struct PluginRoleGeneric* current;
 	if(plugman->generic_c > 0){
 		struct PluginRoleGeneric* last;

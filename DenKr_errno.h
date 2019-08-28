@@ -56,6 +56,7 @@
 #define DL_LIBS__ERR__NOT_LOADED 1101
 #define DL_LIBS__ERR__NO_INIT_FUNC 1102
 #define DL_LIBS__ERR__NO_INIT_ERR 1103
+#define DL_LIBS__ERR__NO_REGISTER_FUNC 1104
 //-----------------------------------------------
 #define THREAD__ERR__CREATION__ATTR_INIT 1201
 #define THREAD__ERR__CREATION__ATTR_MODIFY 1202

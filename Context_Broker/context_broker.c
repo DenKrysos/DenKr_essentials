@@ -61,6 +61,17 @@
 //==================================================================================================//
 
 
+//NOTE: You may wonder, why I did this crazy Function-Name-Creation Stuff to compile two instances of the Context-Broker.
+//	For the Debugging-Mode of the Context-Broker, it is done like following:
+//		Some of the functions (including the central 'DenKr_ContextBroker' itself) are compiled two times. One time with Debugging-Mode and one time without. This is done via some Macro construct, you see it down below.
+//		At Thread startup, via the passed Variable (read-out from config-File in DenKrement) it decides which Version to instantiate.
+//And now you ask: Why not just checking the variable at the corresponding Debug-Output occurrences.
+//Because: This module is pretty performance critical. I don't want these checks constantly the whole time, on every message, even if it does not run in Debugging-Mode.
+//	In the current implementation a run without Debugging-Mode is nice and clean and performant and is not influenced by any Debugging-Stuff at all.
+
+
+
+
 //TODO: include escape sign in msg-format (CSV)
 //
 //TODO: Handle a close of the socket for sending to Consumer
@@ -94,6 +105,15 @@
 //      But hell yeah, it would be a nice extension.
 //
 //TODO: When detecting invalid socket while sending: Remove Entry
+//
+//TODO: Remove the Context-Broker as central bottleneck
+//		Currently every message transmission goes over the Context-Broker as a central handler.
+//		I plan to create a second version of the Context-Broker which functions differently. There will be no central Context-Broker, or better said: No central one for message-passing-handling, but only for "existing at all"
+//		In this version, very much will be done via an "interface". For every message to pass, an own 'handler' will be spawned, that takes care of passing this message to appropriate receivers.
+//		This for sure requires detailed care of mutex handling for every Data (i.e. the Hash-Tables for modifications and 'read while write'; and also the receiving sockets of receivers to prevent mixing messages due to concurrent handlers sending to that socket; in some cases it could maybe also raise synchronization problems with callback-functions, when they are called concurrently, i.e. several instances are actively running at the time)
+
+#define DEB_OR_NOT_NoDebug 0
+#define DEB_OR_NOT_DoDebug 1
 
 
 #ifdef DEBUG
@@ -284,403 +304,636 @@ static int DenKr_ContextBroker_htEntry_BinSearch(const struct DenKr_InfBroker_Ha
 
 
 //Be careful, this function is not save for mutual access. See comments inside.
-static int DenKr_ContextBroker_reg_socket(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts){
-	int err=0;
-	char* context;
-	int ht_ent_size=0;
-	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;
-	unsigned int ht_arr_index;
-
-	context=contexts;
-//			printf("\ncontext: \n",context);
-//			int i;
-//			for(i=0;i<16;i++){
-//				printf("%c",*(context+i));
-//			}
-//			puts("");
-	while('\0'!=*context){
-		#ifdef DEBUG_INFBROKER
-			printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Registering Socket for context: %s\n",context);
-		#endif
-		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);
-		if(ht_ent){
-			//Entry already existent -> search for presence of current source
-			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,(src_iface->hidden).ownID,&ht_arr_index)){
-//				printf("searched ID: %d | found in Index: %d | Value on this index: %d\n",(src_iface->hidden).ownID,ht_arr_index,htEnt_arr(ht_ent,ht_arr_index).threadID);
-				//Already registered in some way: Override the socket-part
-				//NOTE: Be careful, this is not thread-save! This is only deterministic, if only one Entity accesses the Hash-Table.
-				//NOTE: This method here is also depending on how the data is stored inside (or rather 'behind') the hash-table. So be careful,
-				//       since this here directly modifies the malloced object to which is pointed.
-				// Alternatively you could create a whole new Hash-Table Entry and call the HashTab to insert this (newly), which would result in deleting, and recreating the whole entry.
-				htEnt_arr(ht_ent,ht_arr_index).iface = src_iface;
-			}else{
-				//Thread-ID not yet included: Insert.
-				// -> new ht_ent, with array size+1. Copy up to and including the delivered 'ht_arr_index', insert new Consumer to register currently, copy rest afterwards.
-				// -> insert new ht_ent into hashTab, this frees the old and newly inserts this one.
-				int ht_ent_size_new;
-				struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent_new;
-				DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent_new,&ht_ent_size_new,(ht_ent->num)+1);
-				if(0>=ht_arr_index){//New Entry has to be first in the list
-					htEnt_arr(ht_ent_new,0).threadID=(src_iface->hidden).ownID;
-					htEnt_arr(ht_ent_new,0).iface=src_iface;
-					memcpy(&htEnt_arr(ht_ent_new,1),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));
-				}else if(ht_arr_index>=(ht_ent->num)){//New Entry has to be the last in the list
-					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));
-					htEnt_arr(ht_ent_new,(ht_ent->num)).threadID=(src_iface->hidden).ownID;// (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array
-					htEnt_arr(ht_ent_new,(ht_ent->num)).iface=src_iface;
-				}else{//New Entry has to be inserted somewhere between.
-					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),ht_arr_index*sizeof(ht_ent->entries));
-					memcpy(&htEnt_arr(ht_ent_new,ht_arr_index+1),&htEnt_arr(ht_ent,ht_arr_index),((ht_ent->num)-ht_arr_index)*sizeof(ht_ent->entries));
-					htEnt_arr(ht_ent_new,ht_arr_index).threadID=(src_iface->hidden).ownID;// (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array
-					htEnt_arr(ht_ent_new,ht_arr_index).iface=src_iface;
-				}
-				DenKr_HashTab_insert(hashtab,context,ht_ent_new,ht_ent_size_new);
-				free(ht_ent_new);
-			}
-		}else{
-			//No Entry in Hash-Table at all. Create completely new, with source as first and only Consumer
-			DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent,&ht_ent_size,1);
-			htEnt_arr(ht_ent,0).threadID=(src_iface->hidden).ownID;
-			htEnt_arr(ht_ent,0).iface=src_iface;
-			DenKr_HashTab_insert(hashtab,context,ht_ent,ht_ent_size);
-			free(ht_ent);
-		}
-		for(;*context!='\0';context++){}context++;
-	}
-
-	return err;
+//		static int DenKr_ContextBroker_reg_socket(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts){
+#define _CREATE__DenKr_ContextBroker_reg_socket__FUNCNAME(APPENDIX)     DenKr_ContextBroker_reg_socket ## APPENDIX
+#define CREATE__DenKr_ContextBroker_reg_socket__FUNCNAME(APPENDIX)      static int _CREATE__DenKr_ContextBroker_reg_socket__FUNCNAME(APPENDIX)(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker_reg_socket(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker_reg_socket__FUNCNAME(APPENDIX){\
+	int err=0;\
+	char* context;\
+	int ht_ent_size=0;\
+	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;\
+	unsigned int ht_arr_index;\
+\
+	context=contexts;\
+			/**/\
+			/*printf("\ncontext: \n",context);*/\
+			/*int i;*/\
+			/*for(i=0;i<16;i++){*/\
+			/*	printf("%c",*(context+i));*/\
+			/*}*/\
+			/*puts("");*/\
+			/**/\
+	while('\0'!=*context){\
+		SWITCH( \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+				, \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Registering Socket for context: %s\n",context);\
+				, \
+			/* Default: */ \
+				; \
+		) \
+		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);\
+		if(ht_ent){\
+			/*Entry already existent -> search for presence of current source*/\
+			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,(src_iface->hidden).ownID,&ht_arr_index)){\
+				/*printf("searched ID: %d | found in Index: %d | Value on this index: %d\n",(src_iface->hidden).ownID,ht_arr_index,htEnt_arr(ht_ent,ht_arr_index).threadID);*/\
+				/**/\
+				/*Already registered in some way: Override the socket-part*/\
+				/*NOTE: Be careful, this is not thread-save! This is only deterministic, if only one Entity accesses the Hash-Table.*/\
+				/*NOTE: This method here is also depending on how the data is stored inside (or rather 'behind') the hash-table. So be careful,*/\
+				/*       since this here directly modifies the malloced object to which is pointed.*/\
+				/* Alternatively you could create a whole new Hash-Table Entry and call the HashTab to insert this (newly), which would result in deleting, and recreating the whole entry.*/\
+				/**/\
+				htEnt_arr(ht_ent,ht_arr_index).iface = src_iface;\
+			}else{\
+				/**/\
+				/*Thread-ID not yet included: Insert.*/\
+				/* -> new ht_ent, with array size+1. Copy up to and including the delivered 'ht_arr_index', insert new Consumer to register currently, copy rest afterwards.*/\
+				/* -> insert new ht_ent into hashTab, this frees the old and newly inserts this one.*/\
+				/**/\
+				int ht_ent_size_new;\
+				struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent_new;\
+				DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent_new,&ht_ent_size_new,(ht_ent->num)+1);\
+				if(0>=ht_arr_index){/*New Entry has to be first in the list*/\
+					htEnt_arr(ht_ent_new,0).threadID=(src_iface->hidden).ownID;\
+					htEnt_arr(ht_ent_new,0).iface=src_iface;\
+					memcpy(&htEnt_arr(ht_ent_new,1),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));\
+				}else if(ht_arr_index>=(ht_ent->num)){/*New Entry has to be the last in the list*/\
+					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));\
+					htEnt_arr(ht_ent_new,(ht_ent->num)).threadID=(src_iface->hidden).ownID;/* (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array*/\
+					htEnt_arr(ht_ent_new,(ht_ent->num)).iface=src_iface;\
+				}else{/*New Entry has to be inserted somewhere between.*/\
+					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),ht_arr_index*sizeof(ht_ent->entries));\
+					memcpy(&htEnt_arr(ht_ent_new,ht_arr_index+1),&htEnt_arr(ht_ent,ht_arr_index),((ht_ent->num)-ht_arr_index)*sizeof(ht_ent->entries));\
+					htEnt_arr(ht_ent_new,ht_arr_index).threadID=(src_iface->hidden).ownID;/* (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array*/\
+					htEnt_arr(ht_ent_new,ht_arr_index).iface=src_iface;\
+				}\
+				DenKr_HashTab_insert(hashtab,context,ht_ent_new,ht_ent_size_new);\
+				free(ht_ent_new);\
+			}\
+		}else{\
+			/*No Entry in Hash-Table at all. Create completely new, with source as first and only Consumer*/\
+			DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent,&ht_ent_size,1);\
+			htEnt_arr(ht_ent,0).threadID=(src_iface->hidden).ownID;\
+			htEnt_arr(ht_ent,0).iface=src_iface;\
+			DenKr_HashTab_insert(hashtab,context,ht_ent,ht_ent_size);\
+			free(ht_ent);\
+		}\
+		for(;*context!='\0';context++){}context++;\
+	}\
+\
+	return err;\
 }
+CREATE__DenKr_ContextBroker_reg_socket(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker_reg_socket(_DEBUG,DEB_OR_NOT_DoDebug)
 
 //Be careful, this function is not save for mutual access. See comments inside.
-static int DenKr_ContextBroker_reg_callback(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts){
-	int err=0;
-	char* context;
-	int ht_ent_size=0;
-	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;
-	unsigned int ht_arr_index;
-
-	context=contexts;
-	while('\0'!=*context){
-		#ifdef DEBUG_INFBROKER
-			printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Registering Callback for context: %s\n",context);
-		#endif
-		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);
-		if(ht_ent){
-			//Entry already existent -> search for presence of current source
-			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,msgh->src,&ht_arr_index)){
-				//Already registered in some way: Override the socket-part
-				//NOTE: Be careful, this is not thread-save! This is only deterministic, if only one Entity accesses the Hash-Table.
-				//NOTE: This method here is also depending on how the data is stored inside (or rather 'behind') the hash-table. So be careful,
-				//       since this here directly modifies the malloced object to which is pointed.
-				// Alternatively you could create a whole new Hash-Table Entry and call the HashTab to insert this (newly), which would result in deleting, and recreating the whole entry.
-				htEnt_arr(ht_ent,ht_arr_index).callback = callback;
-			}else{
-				//Thread-ID not yet included: Insert.
-				// -> new ht_ent, with array size+1. Copy up to and including the delivered 'ht_arr_index', insert new Consumer to register currently, copy rest afterwards.
-				// -> insert new ht_ent into hashTab, this frees the old and newly inserts this one.
-				int ht_ent_size_new;
-				struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent_new;
-				DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent_new,&ht_ent_size_new,(ht_ent->num)+1);
-				if(0>=ht_arr_index){//New Entry has to be first in the list
-					htEnt_arr(ht_ent_new,0).threadID=msgh->src;
-					htEnt_arr(ht_ent_new,0).callback=callback;
-					memcpy(&htEnt_arr(ht_ent_new,1),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));
-				}else if(ht_arr_index>=(ht_ent->num)){//New Entry has to be the last in the list
-					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));
-					htEnt_arr(ht_ent_new,(ht_ent->num)).threadID=msgh->src;// (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array
-					htEnt_arr(ht_ent_new,(ht_ent->num)).callback=callback;
-				}else{//New Entry has to be inserted somewhere between.
-					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),ht_arr_index*sizeof(ht_ent->entries));
-					memcpy(&htEnt_arr(ht_ent_new,ht_arr_index+1),&htEnt_arr(ht_ent,ht_arr_index),((ht_ent->num)-ht_arr_index)*sizeof(ht_ent->entries));
-					htEnt_arr(ht_ent_new,ht_arr_index).threadID=msgh->src;// (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array
-					htEnt_arr(ht_ent_new,ht_arr_index).callback=callback;
-				}
-				DenKr_HashTab_insert(hashtab,context,ht_ent_new,ht_ent_size_new);
-				free(ht_ent_new);
-			}
-		}else{
-			//No Entry in Hash-Table at all. Create completely new, with source as first and only Consumer
-			#ifdef DEBUG_INFBROKER
-//				printf("\n Putting in Callback-Address: %llu\n\n",callback);
-			#endif
-			DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent,&ht_ent_size,1);
-			htEnt_arr(ht_ent,0).threadID=msgh->src;
-			htEnt_arr(ht_ent,0).callback=callback;
-			#ifdef DEBUG_INFBROKER
-//				printf("\n Filling in Hash-Table with Callback wrote into: Context: %s  |  Entry-Count: %d\n\n",context,ht_ent->num);
-			#endif
-			DenKr_HashTab_insert(hashtab,context,ht_ent,ht_ent_size);
-			free(ht_ent);
-		}
-		for(;*context!='\0';context++){}context++;
-	}
-
-	return err;
+//		static int DenKr_ContextBroker_reg_callback(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts){
+#define _CREATE__DenKr_ContextBroker_reg_callback__FUNCNAME(APPENDIX)      DenKr_ContextBroker_reg_callback ## APPENDIX
+#define CREATE__DenKr_ContextBroker_reg_callback__FUNCNAME(APPENDIX)       static int _CREATE__DenKr_ContextBroker_reg_callback__FUNCNAME(APPENDIX)(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker_reg_callback(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker_reg_callback__FUNCNAME(APPENDIX){\
+	int err=0;\
+	char* context;\
+	int ht_ent_size=0;\
+	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;\
+	unsigned int ht_arr_index;\
+\
+	context=contexts;\
+	while('\0'!=*context){\
+		SWITCH( \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+				, \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Registering Callback for context: %s\n",context);\
+				, \
+			/* Default: */ \
+				; \
+		) \
+		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);\
+		if(ht_ent){\
+			/*Entry already existent -> search for presence of current source*/\
+			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,msgh->src,&ht_arr_index)){\
+				/**/\
+				/*Already registered in some way: Override the socket-part*/\
+				/*NOTE: Be careful, this is not thread-save! This is only deterministic, if only one Entity accesses the Hash-Table.*/\
+				/*NOTE: This method here is also depending on how the data is stored inside (or rather 'behind') the hash-table. So be careful,*/\
+				/*       since this here directly modifies the malloced object to which is pointed.*/\
+				/* Alternatively you could create a whole new Hash-Table Entry and call the HashTab to insert this (newly), which would result in deleting, and recreating the whole entry.*/\
+				/**/\
+				htEnt_arr(ht_ent,ht_arr_index).callback = callback;\
+			}else{\
+				/**/\
+				/*Thread-ID not yet included: Insert.*/\
+				/* -> new ht_ent, with array size+1. Copy up to and including the delivered 'ht_arr_index', insert new Consumer to register currently, copy rest afterwards.*/\
+				/* -> insert new ht_ent into hashTab, this frees the old and newly inserts this one.*/\
+				/**/\
+				int ht_ent_size_new;\
+				struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent_new;\
+				DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent_new,&ht_ent_size_new,(ht_ent->num)+1);\
+				if(0>=ht_arr_index){/*New Entry has to be first in the list*/\
+					htEnt_arr(ht_ent_new,0).threadID=msgh->src;\
+					htEnt_arr(ht_ent_new,0).callback=callback;\
+					memcpy(&htEnt_arr(ht_ent_new,1),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));\
+				}else if(ht_arr_index>=(ht_ent->num)){/*New Entry has to be the last in the list*/\
+					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),(ht_ent->num)*sizeof(ht_ent->entries));\
+					htEnt_arr(ht_ent_new,(ht_ent->num)).threadID=msgh->src;/* (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array*/\
+					htEnt_arr(ht_ent_new,(ht_ent->num)).callback=callback;\
+				}else{/*New Entry has to be inserted somewhere between.*/\
+					memcpy(&htEnt_arr(ht_ent_new,0),&htEnt_arr(ht_ent,0),ht_arr_index*sizeof(ht_ent->entries));\
+					memcpy(&htEnt_arr(ht_ent_new,ht_arr_index+1),&htEnt_arr(ht_ent,ht_arr_index),((ht_ent->num)-ht_arr_index)*sizeof(ht_ent->entries));\
+					htEnt_arr(ht_ent_new,ht_arr_index).threadID=msgh->src;/* (ht_ent->num) is equal to '(ht_ent_new->num)-1', which is the highest Index of the new Array*/\
+					htEnt_arr(ht_ent_new,ht_arr_index).callback=callback;\
+				}\
+				DenKr_HashTab_insert(hashtab,context,ht_ent_new,ht_ent_size_new);\
+				free(ht_ent_new);\
+			}\
+		}else{\
+			/*No Entry in Hash-Table at all. Create completely new, with source as first and only Consumer*/\
+			SWITCH( \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+					, \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+					/*printf("\n Putting in Callback-Address: %llu\n\n",callback);*/\
+					, \
+				/* Default: */ \
+					/*;*/ \
+			) \
+			DenKr_ContextBroker_init_ent_for_HashTab(&ht_ent,&ht_ent_size,1);\
+			htEnt_arr(ht_ent,0).threadID=msgh->src;\
+			htEnt_arr(ht_ent,0).callback=callback;\
+			SWITCH( \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+					, \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				/*printf("\n Filling in Hash-Table with Callback wrote into: Context: %s  |  Entry-Count: %d\n\n",context,ht_ent->num);*/\
+					, \
+				/* Default: */ \
+					/*;*/ \
+			) \
+			DenKr_HashTab_insert(hashtab,context,ht_ent,ht_ent_size);\
+			free(ht_ent);\
+		}\
+		for(;*context!='\0';context++){}context++;\
+	}\
+\
+	return err;\
 }
+CREATE__DenKr_ContextBroker_reg_callback(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker_reg_callback(_DEBUG,DEB_OR_NOT_DoDebug)
 
-static int DenKr_ContextBroker_dispenseInfo(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, char* msg){
-	//Sieht in beiden Übermittlungs-Methoden nach und sendet unter Umständen auch auf beiden Methoden an denselben Clienten.
-	//Sollte ein Client während seines Betriebes die Methode WECHSELN wollen (d.h. von einer auf die andere umsteigen) obliegt es dem Clienten sich bei einer Methode mittels der Remove-Methode auszutragen.
-	//msg is supposed to look like (after the header):    [context] '\0' [otherStuff]
-	//                                            i.e.    'char1' 'char2' ... 'charN' '\0' 'SomeByte1' ... 'SomeByteM'
-	int err=0, i;
-	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;
-	DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,msg);
-	if(ht_ent){
-		#ifdef DEBUG_INFBROKER
-//			DEBUG_CHECK_test_VS_test_consumer_callback
-		#endif
-		if(FLAG_CHECK(msgh->flags,DenKr_InfBroker_Msg_FLAG__SendDuplicate)){
-			for(i=0;i<ht_ent->num;i++){
-				if((htEnt_arr(ht_ent,i).iface) && (FLAG_CHECK(((htEnt_arr(ht_ent,i).iface)->hidden).flags,DenKr_InfBroker_Iface_Client__FLAG__SOCK_FROM_BROKER_VALID))){
-					//NOTE: This sequential sending needs 'assistance' from the "receiver-side". But, it should be handled by my receiving implementation anyways, where i anyhow secure a proper socket-read at any rate; because... you know... socket-stuff can suck at times... (if i won't forget it ;oP)
-	//				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" msgh.size: %d\n",msgh->len);
-					senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,(char*)msgh,sizeof(*msgh));
-					senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,msg,msgh->len);
-				}
-				if(htEnt_arr(ht_ent,i).callback){
-					//Do an own malloc&copy for every callback-func that gets the msg. The callbacks have to free this.
-					char* msgcpy;
-					msgcpy=malloc(sizeof(*msgh)+(msgh->len));
-					memcpy(msgcpy,msgh,sizeof(*msgh));
-					memcpy(msgcpy+sizeof(*msgh),msg,msgh->len);
-					(htEnt_arr(ht_ent,i).callback)((void*)msgcpy);
-				}
-			}
-		}else{
-			//The Sending itself and the surrounding for-loop is just the same as above, but extended by the check for the src to avoid duplicates (delivering msg back to sender).
-			for(i=0;i<ht_ent->num;i++){
-				if(htEnt_arr(ht_ent,i).threadID!=msgh->src){
-					if((htEnt_arr(ht_ent,i).iface) && (FLAG_CHECK(((htEnt_arr(ht_ent,i).iface)->hidden).flags,DenKr_InfBroker_Iface_Client__FLAG__SOCK_FROM_BROKER_VALID))){
-						senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,(char*)msgh,sizeof(*msgh));
-						senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,msg,msgh->len);
-					}
-					if(htEnt_arr(ht_ent,i).callback){
-						char* msgcpy;
-						msgcpy=malloc(sizeof(*msgh)+(msgh->len));
-						memcpy(msgcpy,msgh,sizeof(*msgh));
-						memcpy(msgcpy+sizeof(*msgh),msg,msgh->len);
-						(htEnt_arr(ht_ent,i).callback)((void*)msgcpy);
-					}
-				}
-			}
-		}
-	}else{
-		//No Entry in Hash-Table
-		#ifdef DEBUG_INFBROKER
-			printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Consumer-Entry for this Context present: %s\n",msg);
-		#endif
-	}
-	return err;
+//		static int DenKr_ContextBroker_dispenseInfo(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, char* msg){
+	/**/
+	/*Sieht in beiden Übermittlungs-Methoden nach und sendet unter Umständen auch auf beiden Methoden an denselben Clienten.*/
+	/*Sollte ein Client während seines Betriebes die Methode WECHSELN wollen (d.h. von einer auf die andere umsteigen) obliegt es dem Clienten sich bei einer Methode mittels der Remove-Methode auszutragen.*/
+	/*msg is supposed to look like (after the header):    [context] '\0' [otherStuff]*/
+	/*                                            i.e.    'char1' 'char2' ... 'charN' '\0' 'SomeByte1' ... 'SomeByteM'*/
+	/**/
+#define _CREATE__DenKr_ContextBroker_dispenseInfo__FUNCNAME(APPENDIX)      DenKr_ContextBroker_dispenseInfo ## APPENDIX
+#define CREATE__DenKr_ContextBroker_dispenseInfo__FUNCNAME(APPENDIX)       static int _CREATE__DenKr_ContextBroker_dispenseInfo__FUNCNAME(APPENDIX)(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, char* msg)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker_dispenseInfo(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker_dispenseInfo__FUNCNAME(APPENDIX){\
+	int err=0, i;\
+	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;\
+	DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,msg);\
+	if(ht_ent){\
+		SWITCH( \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+				, \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				/*DEBUG_CHECK_test_VS_test_consumer_callback*/\
+				, \
+			/* Default: */ \
+				; \
+		) \
+		if(FLAG_CHECK(msgh->flags,DenKr_InfBroker_Msg_FLAG__SendDuplicate)){\
+			for(i=0;i<ht_ent->num;i++){\
+				if((htEnt_arr(ht_ent,i).iface) && (FLAG_CHECK(((htEnt_arr(ht_ent,i).iface)->hidden).flags,DenKr_InfBroker_Iface_Client__FLAG__SOCK_FROM_BROKER_VALID))){\
+					/*NOTE: This sequential sending needs 'assistance' from the "receiver-side". But, it should be handled by my receiving implementation anyways, where i anyhow secure a proper socket-read at any rate; because... you know... socket-stuff can suck at times... (if i won't forget it ;oP)*/\
+					/*printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" msgh.size: %d\n",msgh->len);*/\
+					senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,(char*)msgh,sizeof(*msgh));\
+					senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,msg,msgh->len);\
+				}\
+				if(htEnt_arr(ht_ent,i).callback){\
+					/*Do an own malloc&copy for every callback-func that gets the msg. The callbacks have to free this.*/\
+					char* msgcpy;\
+					msgcpy=malloc(sizeof(*msgh)+(msgh->len));\
+					memcpy(msgcpy,msgh,sizeof(*msgh));\
+					memcpy(msgcpy+sizeof(*msgh),msg,msgh->len);\
+					(htEnt_arr(ht_ent,i).callback)((void*)msgcpy);\
+				}\
+			}\
+		}else{\
+			/*The Sending itself and the surrounding for-loop is just the same as above, but extended by the check for the src to avoid duplicates (delivering msg back to sender).*/\
+			for(i=0;i<ht_ent->num;i++){\
+				if(htEnt_arr(ht_ent,i).threadID!=msgh->src){\
+					if((htEnt_arr(ht_ent,i).iface) && (FLAG_CHECK(((htEnt_arr(ht_ent,i).iface)->hidden).flags,DenKr_InfBroker_Iface_Client__FLAG__SOCK_FROM_BROKER_VALID))){\
+						senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,(char*)msgh,sizeof(*msgh));\
+						senddetermined(((htEnt_arr(ht_ent,i).iface)->hidden).recv_from_Broker.BrokerSock,msg,msgh->len);\
+					}\
+					if(htEnt_arr(ht_ent,i).callback){\
+						char* msgcpy;\
+						msgcpy=malloc(sizeof(*msgh)+(msgh->len));\
+						memcpy(msgcpy,msgh,sizeof(*msgh));\
+						memcpy(msgcpy+sizeof(*msgh),msg,msgh->len);\
+						(htEnt_arr(ht_ent,i).callback)((void*)msgcpy);\
+					}\
+				}\
+			}\
+		}\
+	}else{\
+		/*No Entry in Hash-Table*/\
+		SWITCH( \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+				, \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Consumer-Entry for this Context present: %s\n",msg);\
+				, \
+			/* Default: */ \
+				; \
+		) \
+	}\
+	return err;\
 }
+CREATE__DenKr_ContextBroker_dispenseInfo(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker_dispenseInfo(_DEBUG,DEB_OR_NOT_DoDebug)
 
 
-static int DenKr_ContextBroker_rem_socket(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts){
-	int err=0;
-
-	return err;
+//TODO
+//		static int DenKr_ContextBroker_rem_socket(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts){
+#define _CREATE__DenKr_ContextBroker_rem_socket__FUNCNAME(APPENDIX)      DenKr_ContextBroker_rem_socket ## APPENDIX
+#define CREATE__DenKr_ContextBroker_rem_socket__FUNCNAME(APPENDIX)       static int _CREATE__DenKr_ContextBroker_rem_socket__FUNCNAME(APPENDIX)(DenKr_HashTab_hash_table* hashtab, DenKr_InfBroker_Iface_Client* src_iface, char* contexts)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker_rem_socket(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker_rem_socket__FUNCNAME(APPENDIX){\
+	int err=0;\
+\
+	return err;\
 }
+CREATE__DenKr_ContextBroker_rem_socket(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker_rem_socket(_DEBUG,DEB_OR_NOT_DoDebug)
 
 
-static int DenKr_ContextBroker_rem_callback(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts){
-	int err=0;
-	char* context;
-//	int ht_ent_size=0;
-	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;
-	unsigned int ht_arr_index;
-
-	context=contexts;
-	while('\0'!=*context){
-		#ifdef DEBUG_INFBROKER
-			printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Removing Callback from context: %s\n",context);
-		#endif
-		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);
-		if(ht_ent){
-			//Entry already existent -> search for presence of current source
-			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,msgh->src,&ht_arr_index)){
-				//Callback for this Thread-ID inside this Context registered: Set Callback to NULL
-				//Additional Notes: See inside the Register Functions.
-				//TODO: Future extension: Check also if Socket is valid: YES: only set Callback to NULL. NO: Remove whole entry.
-				htEnt_arr(ht_ent,ht_arr_index).callback = NULL;
-			}else{
-				//Thread-ID not included: Nothing to remove
-				//No Entry FOR THIS THREAD in Hash-Table
-				#ifdef DEBUG_INFBROKER
-					printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Entry for removing this Thread-ID from Context present: %s\n",context);
-				#endif
-			}
-		}else{
-			//No Entry in Hash-Table
-			#ifdef DEBUG_INFBROKER
-				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Entry for this Context present at all (While Removing): %s\n",context);
-			#endif
-		}
-		for(;*context!='\0';context++){}context++;
-	}
-
-	return err;
+//		static int DenKr_ContextBroker_rem_callback(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts){
+#define _CREATE__DenKr_ContextBroker_rem_callback__FUNCNAME(APPENDIX)      DenKr_ContextBroker_rem_callback ## APPENDIX
+#define CREATE__DenKr_ContextBroker_rem_callback__FUNCNAME(APPENDIX)       static int _CREATE__DenKr_ContextBroker_rem_callback__FUNCNAME(APPENDIX)(DenKr_HashTab_hash_table* hashtab, struct DenKr_InfBroker_Msg_Header* msgh, InfBrok_Func_Callback callback, char* contexts)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker_rem_callback(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker_rem_callback__FUNCNAME(APPENDIX){\
+	int err=0;\
+	char* context;\
+	/*int ht_ent_size=0;*/\
+	struct DenKr_InfBroker_HashTab_Entry_Val_t* ht_ent;\
+	unsigned int ht_arr_index;\
+\
+	context=contexts;\
+	while('\0'!=*context){\
+		SWITCH( \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+				, \
+			EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+				printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Removing Callback from context: %s\n",context);\
+				, \
+			/* Default: */ \
+				; \
+		) \
+		DenKr_ContextBroker_get_ent_from_HashTab(&ht_ent,hashtab,context);\
+		if(ht_ent){\
+			/*Entry already existent -> search for presence of current source*/\
+			if(DenKr_ContextBroker_htEntry_BinSearch(ht_ent,msgh->src,&ht_arr_index)){\
+				/**/\
+				/*Callback for this Thread-ID inside this Context registered: Set Callback to NULL*/\
+				/*Additional Notes: See inside the Register Functions.*/\
+				/*TODO: Future extension: Check also if Socket is valid: YES: only set Callback to NULL. NO: Remove whole entry.*/\
+				/**/\
+				htEnt_arr(ht_ent,ht_arr_index).callback = NULL;\
+			}else{\
+				/**/\
+				/*Thread-ID not included: Nothing to remove*/\
+				/*No Entry FOR THIS THREAD in Hash-Table*/\
+				/**/\
+				SWITCH( \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+						, \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Entry for removing this Thread-ID from Context present: %s\n",context);\
+						, \
+					/* Default: */ \
+						; \
+				) \
+			}\
+		}else{\
+			/*No Entry in Hash-Table*/\
+			SWITCH( \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+					, \
+				EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+					printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" No Entry for this Context present at all (While Removing): %s\n",context);\
+					, \
+				/* Default: */ \
+					; \
+			) \
+		}\
+		for(;*context!='\0';context++){}context++;\
+	}\
+\
+	return err;\
 }
+CREATE__DenKr_ContextBroker_rem_callback(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker_rem_callback(_DEBUG,DEB_OR_NOT_DoDebug)
 
 //TODO:
-int DenKr_ContextBroker(DenKr_InfBroker_SockToBrok* SockToBrok, DenKr_HashTab_hash_table* hashtab_consumer, DenKr_HashTab_hash_table* hashtab_producer, DenKr_essentials_ThreadID ownID,DenKr_essentials_ThreadID mainThreadID){
-	int err;
-	int b_recvd;//bytes received from socket
-	struct DenKr_InfBroker_Msg_Header msgh;
-	char* msg=NULL;
-	//First a 'PEEK' read, just for blocking and reawakening, for the sake of performance and afterwards the Mutex-Handling and than only doing the real socket-read
-	while(recv((SockToBrok->hidden).sock_inside_broker,&msgh,1, MSG_PEEK) != 0){
-//		ContextBrokerReadSocketStart:
-		sem_wait(&((SockToBrok->hidden).mutex));
-		//TODO: Use function "recvdetermined"
-		b_recvd=recv((SockToBrok->hidden).sock_inside_broker,&msgh,sizeof(msgh),0);
-		if(0<b_recvd){//proper operation
-			//Header is received. Now use the 'len' to get the actual msg and Mux the Types.
-			if(msgh.len){
-				msg=malloc(msgh.len);
-				b_recvd=recv((SockToBrok->hidden).sock_inside_broker,msg,msgh.len,0);
-				while(b_recvd<msgh.len){
-					int b_recvd_temp;
-					b_recvd_temp=recv((SockToBrok->hidden).sock_inside_broker,msg+b_recvd,(msgh.len)-b_recvd,0);
-					if(0>b_recvd_temp){
-						//TODO
-						printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 1.\n");
-					}else if(0==b_recvd_temp){
-						//TODO
-						printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 2.\n");
-					}
-					b_recvd+=b_recvd_temp;
-				}
-			}
-			sem_post(&((SockToBrok->hidden).mutex));
-			switch(msgh.type){
-			case DenKr_InfBroker_Msg_Type__Management:
-				switch(msgh.subtype){
-				case DenKr_InfBroker_Msg_SubType__Management_Restricted__Termination:
-					if(msgh.src==mainThreadID){
-						//Valid: Termination
-						printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"<ContextBroker:>");printfc(gray," NOTE:");printf(" Received Termination Command.\n");
-						err=THREAD__OP__TERMINATION;
-						sem_wait(&((SockToBrok->hidden).mutex));
-						if(shutdown((SockToBrok->hidden).sock_inside_broker,1)==-1){
-							fprintf(stderr, "unable to shutdown socket\n");
-							exit(1);
-						}
-						if(close((SockToBrok->hidden).sock_inside_broker)==-1){
-							fprintf(stderr, "unable to close socket\n");
-							exit(1);
-						}
-						if(shutdown(SockToBrok->sock,1)==-1){
-							fprintf(stderr, "unable to shutdown socket\n");
-							exit(1);
-						}
-						if(close(SockToBrok->sock)==-1){
-							fprintf(stderr, "unable to close socket\n");
-							exit(1);
-						}
-						sem_post(&((SockToBrok->hidden).mutex));
-						sem_destroy(&((SockToBrok->hidden).mutex));
-						//TODO: Still much todo here...
-						goto ContextBrokerTermination;
-					}else{
-						printfc(red,"WARNING:");printf(" Context-Broker recvd Termination Command from Thread different from Main. Ignoring...\n");
-					}
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RegConsumerSocket:
-					#ifdef DEBUG_INFBROKER
-						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ConsumerSocket for ID: %d\n", msgh.src);
-//						printfc(gray,"DEBUG:");printf(" Msg: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (after Iface-Pointer, First Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg+sizeof(DenKr_InfBroker_Iface_Client*));
-//						DenKr_InfBroker_Iface_Client* temptestp;
-//						temptestp=*((DenKr_InfBroker_Iface_Client**)msg);
-//						printfc(gray,"DEBUG:");printf(" From the Interface-Pointer: ID: %d\n",(temptestp->hidden).ownID);
-					#endif
-					DenKr_ContextBroker_reg_socket(hashtab_consumer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RegConsumerCallback:
-					#ifdef DEBUG_INFBROKER
-						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ConsumerCallback for ID: %d\n", msgh.src);
-					#endif
-//						;
-//						int i;
-//						puts("");
-//						for(i=0;i<msgh.len;i++){
-//							printf("%d | ",msg[i]);
-//						}
-//						puts("");
-					DenKr_ContextBroker_reg_callback(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RegProducerSocket:
-					#ifdef DEBUG_INFBROKER
-						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ProducerSocket for ID: %d\n", msgh.src);
-					#endif
-					DenKr_ContextBroker_reg_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RegProducerCallback:
-					#ifdef DEBUG_INFBROKER
-						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ProducerCallback for ID: %d\n", msgh.src);
-//						printfc(gray,"DEBUG:");printf(" Msg: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tCallback-Address: %llu | msg (after CB-Pointer, First Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,*((InfBrok_Func_Callback*)msg),msg+sizeof(InfBrok_Func_Callback));
-					#endif
-					DenKr_ContextBroker_reg_callback(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RemoveConsumerSocket:
-					//TODO
-					DenKr_ContextBroker_rem_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RemoveConsumerCallback:
-					//TODO
-					DenKr_ContextBroker_rem_callback(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RemoveProducerSocket:
-					//TODO
-					DenKr_ContextBroker_rem_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));
-					break;
-				case DenKr_InfBroker_Msg_SubType__Management__RemoveProducerCallback:
-					//TODO
-					DenKr_ContextBroker_rem_callback(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));
-					break;
-				}
-				break;
-			case DenKr_InfBroker_Msg_Type__Request:
-				#ifdef DEBUG_INFBROKER
-					printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Request for Context: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (First Null-terminated): %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg);
-				#endif
-				DenKr_ContextBroker_dispenseInfo(hashtab_producer,&msgh,msg);
-				//TODO
-				break;
-//			case DenKr_InfBroker_Msg_Type__Generic:
-//				break;
-			case DenKr_InfBroker_Msg_Type__Raw:
-//				break;
-			case DenKr_InfBroker_Msg_Type__KeyEqualValue_CSV:
-//				break;
-			default:
-				#ifdef DEBUG_INFBROKER
-					printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Msg to dispense: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (First Null-terminated): %s | (Second Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg,msg+strlen(msg)+1);
-				#endif
-				DenKr_ContextBroker_dispenseInfo(hashtab_consumer,&msgh,msg);
-				break;
-			}
-			if(msg){
-				free(msg);
-				msg=NULL;
-			}
-		}else if(0>b_recvd){//error returned, check ERRNO
-			//TODO
-//			ContextBrokerReadSocketError:
-			sem_post(&((SockToBrok->hidden).mutex));
-			printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 3.\n");
-			goto ContextBrokerTermination;
-		}else{//only '0==b_recvd' left, normal socket shutdown at counterside
-			//TODO
-//			ContextBrokerReadSocketShutdown:
-			sem_post(&((SockToBrok->hidden).mutex));
-			printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 4.\n");
-			goto ContextBrokerTermination;
-		}
-	}//TODO: handle here a socket-shutdown (caused by the other side) as well as at the inside-reader socket
-
-	ContextBrokerTermination:
-	return err;
+//		int DenKr_ContextBroker(DenKr_InfBroker_SockToBrok* SockToBrok, DenKr_HashTab_hash_table* hashtab_consumer, DenKr_HashTab_hash_table* hashtab_producer, DenKr_essentials_ThreadID ownID,DenKr_essentials_ThreadID mainThreadID){
+#define _CREATE__DenKr_ContextBroker__FUNCNAME(APPENDIX)      DenKr_ContextBroker ## APPENDIX
+#define CREATE__DenKr_ContextBroker__FUNCNAME(APPENDIX)       static int _CREATE__DenKr_ContextBroker__FUNCNAME(APPENDIX)(DenKr_InfBroker_SockToBrok* SockToBrok, DenKr_HashTab_hash_table* hashtab_consumer, DenKr_HashTab_hash_table* hashtab_producer, DenKr_essentials_ThreadID ownID,DenKr_essentials_ThreadID mainThreadID)
+// - - - - - - -
+#define CREATE__DenKr_ContextBroker(APPENDIX,DEB_OR_NOT) CREATE__DenKr_ContextBroker__FUNCNAME(APPENDIX){\
+	int err;\
+	int b_recvd;/*bytes received from socket*/\
+	struct DenKr_InfBroker_Msg_Header msgh;\
+	char* msg=NULL;\
+	/*First a 'PEEK' read, just for blocking and reawakening, for the sake of performance and afterwards the Mutex-Handling and than only doing the real socket-read*/\
+	while(recv((SockToBrok->hidden).sock_inside_broker,&msgh,1, MSG_PEEK) != 0){\
+		/*ContextBrokerReadSocketStart:*/\
+		sem_wait(&((SockToBrok->hidden).mutex));\
+		/*TODO: Use function "recvdetermined"*/\
+		b_recvd=recv((SockToBrok->hidden).sock_inside_broker,&msgh,sizeof(msgh),0);\
+		if(0<b_recvd){/*proper operation*/\
+			/*Header is received. Now use the 'len' to get the actual msg and Mux the Types.*/\
+			if(msgh.len){\
+				msg=malloc(msgh.len);\
+				b_recvd=recv((SockToBrok->hidden).sock_inside_broker,msg,msgh.len,0);\
+				while(b_recvd<msgh.len){\
+					int b_recvd_temp;\
+					b_recvd_temp=recv((SockToBrok->hidden).sock_inside_broker,msg+b_recvd,(msgh.len)-b_recvd,0);\
+					if(0>b_recvd_temp){\
+						/*TODO*/\
+						printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 1.\n");\
+					}else if(0==b_recvd_temp){\
+						/*TODO*/\
+						printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 2.\n");\
+					}\
+					b_recvd+=b_recvd_temp;\
+				}\
+			}\
+			sem_post(&((SockToBrok->hidden).mutex));\
+			switch(msgh.type){\
+			case DenKr_InfBroker_Msg_Type__Management:\
+				switch(msgh.subtype){\
+				case DenKr_InfBroker_Msg_SubType__Management_Restricted__Termination:\
+					if(msgh.src==mainThreadID){\
+						/*Valid: Termination*/\
+						printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"<ContextBroker:>");printfc(gray," NOTE:");printf(" Received Termination Command.\n");\
+						err=THREAD__OP__TERMINATION;\
+						sem_wait(&((SockToBrok->hidden).mutex));\
+						if(shutdown((SockToBrok->hidden).sock_inside_broker,1)==-1){\
+							fprintf(stderr, "unable to shutdown socket\n");\
+							exit(1);\
+						}\
+						if(close((SockToBrok->hidden).sock_inside_broker)==-1){\
+							fprintf(stderr, "unable to close socket\n");\
+							exit(1);\
+						}\
+						if(shutdown(SockToBrok->sock,1)==-1){\
+							fprintf(stderr, "unable to shutdown socket\n");\
+							exit(1);\
+						}\
+						if(close(SockToBrok->sock)==-1){\
+							fprintf(stderr, "unable to close socket\n");\
+							exit(1);\
+						}\
+						sem_post(&((SockToBrok->hidden).mutex));\
+						sem_destroy(&((SockToBrok->hidden).mutex));\
+						/*TODO: Still much todo here...*/\
+						goto ContextBrokerTermination;\
+					}else{\
+						printfc(red,"WARNING:");printf(" Context-Broker recvd Termination Command from Thread different from Main. Ignoring...\n");\
+					}\
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RegConsumerSocket:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ConsumerSocket for ID: %d\n", msgh.src);\
+							/**/\
+							/*printfc(gray,"DEBUG:");printf(" Msg: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (after Iface-Pointer, First Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg+sizeof(DenKr_InfBroker_Iface_Client*));*/\
+							/*DenKr_InfBroker_Iface_Client* temptestp;*/\
+							/*temptestp=*((DenKr_InfBroker_Iface_Client**)msg);*/\
+							/*printfc(gray,"DEBUG:");printf(" From the Interface-Pointer: ID: %d\n",(temptestp->hidden).ownID);*/\
+							/**/\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_reg_socket(hashtab_consumer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_reg_socket_DEBUG(hashtab_consumer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RegConsumerCallback:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ConsumerCallback for ID: %d\n", msgh.src);\
+							, \
+						/* Default: */ \
+							; \
+					) \
+						/**/\
+						/*;*/\
+						/*int i;*/\
+						/*puts("");*/\
+						/*for(i=0;i<msgh.len;i++){*/\
+						/*	printf("%d | ",msg[i]);*/\
+						/*}*/\
+						/*puts("");*/\
+						/**/\
+						SWITCH( \
+							EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+								DenKr_ContextBroker_reg_callback(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+								, \
+							EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+								DenKr_ContextBroker_reg_callback_DEBUG(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+								, \
+							/* Default: */ \
+								; \
+						) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RegProducerSocket:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ProducerSocket for ID: %d\n", msgh.src);\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_reg_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_reg_socket_DEBUG(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RegProducerCallback:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Context-Broker - Registering ProducerCallback for ID: %d\n", msgh.src);\
+							/*printfc(gray,"DEBUG:");printf(" Msg: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tCallback-Address: %llu | msg (after CB-Pointer, First Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,*((InfBrok_Func_Callback*)msg),msg+sizeof(InfBrok_Func_Callback));*/\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_reg_callback(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_reg_callback_DEBUG(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RemoveConsumerSocket:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_rem_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_rem_socket_DEBUG(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RemoveConsumerCallback:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_rem_callback(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_rem_callback_DEBUG(hashtab_consumer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RemoveProducerSocket:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_rem_socket(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_rem_socket_DEBUG(hashtab_producer,*((DenKr_InfBroker_Iface_Client**)msg),msg+sizeof(DenKr_InfBroker_Iface_Client*));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				case DenKr_InfBroker_Msg_SubType__Management__RemoveProducerCallback:\
+					SWITCH( \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+							DenKr_ContextBroker_rem_callback(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+							DenKr_ContextBroker_rem_callback_DEBUG(hashtab_producer, &msgh, *((InfBrok_Func_Callback*)msg), msg+sizeof(InfBrok_Func_Callback));\
+							, \
+						/* Default: */ \
+							; \
+					) \
+					break;\
+				}\
+				break;\
+			case DenKr_InfBroker_Msg_Type__Request:\
+				SWITCH( \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+						, \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Request for Context: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (First Null-terminated): %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg);\
+						, \
+					/* Default: */ \
+						; \
+				) \
+				SWITCH( \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+						DenKr_ContextBroker_dispenseInfo(hashtab_producer,&msgh,msg);\
+						, \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+						DenKr_ContextBroker_dispenseInfo_DEBUG(hashtab_producer,&msgh,msg);\
+						, \
+					/* Default: */ \
+						; \
+				) \
+				/*TODO*/\
+				break;\
+			/*case DenKr_InfBroker_Msg_Type__Generic:*/\
+				/*break;*/\
+			case DenKr_InfBroker_Msg_Type__Raw:\
+				/*break;*/\
+			case DenKr_InfBroker_Msg_Type__KeyEqualValue_CSV:\
+				/*break;*/\
+			default:\
+				SWITCH( \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+						, \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+						printfc(gray,"DEBUG");printfc(DENKR__COLOR_ANSI__CONTEXT_BROKER," (InfBrok):");printf(" Msg to dispense: size: %llu | src: %hu | type: %hu | subtype: %hu |\n\tmsg (First Null-terminated): %s | (Second Null-terminated) %s\n",(unsigned long long)msgh.len,msgh.src,msgh.type,msgh.subtype,msg,msg+strlen(msg)+1);\
+						, \
+					/* Default: */ \
+						; \
+				) \
+				SWITCH( \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_NoDebug), \
+						DenKr_ContextBroker_dispenseInfo(hashtab_consumer,&msgh,msg);\
+						, \
+					EQUAL(DEB_OR_NOT,DEB_OR_NOT_DoDebug), \
+						DenKr_ContextBroker_dispenseInfo_DEBUG(hashtab_consumer,&msgh,msg);\
+						, \
+					/* Default: */ \
+						; \
+				) \
+				break;\
+			}\
+			if(msg){\
+				free(msg);\
+				msg=NULL;\
+			}\
+		}else if(0>b_recvd){/*error returned, check ERRNO*/\
+			/*TODO*/\
+			/*ContextBrokerReadSocketError:*/\
+			sem_post(&((SockToBrok->hidden).mutex));\
+			printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 3.\n");\
+			goto ContextBrokerTermination;\
+		}else{/*only '0==b_recvd' left, normal socket shutdown at counterside*/\
+			/*TODO*/\
+			/*ContextBrokerReadSocketShutdown:*/\
+			sem_post(&((SockToBrok->hidden).mutex));\
+			printfc(red,"\n!ERROR!!!ERROR! TODO. Some Error at receiving inside Context-Broker 4.\n");\
+			goto ContextBrokerTermination;\
+		}\
+	}/*TODO: handle here a socket-shutdown (caused by the other side) as well as at the inside-reader socket*/\
+\
+	ContextBrokerTermination:\
+	return err;\
 }
+CREATE__DenKr_ContextBroker(,DEB_OR_NOT_NoDebug)
+CREATE__DenKr_ContextBroker(_DEBUG,DEB_OR_NOT_DoDebug)
 
 
 void* DenKr_ContextBroker_thread(void* arg){
@@ -693,11 +946,12 @@ void* DenKr_ContextBroker_thread(void* arg){
 	DenKr_InfBroker_SockToBrok* SockToBrok = ((struct DenKr_ContextBroker_ThreadArgPassing *)arg)->SockToBrok;
 	DenKr_essentials_ThreadID ownID = (((struct DenKr_ContextBroker_ThreadArgPassing *)arg)->ownID);
 	DenKr_essentials_ThreadID mainThreadID = (((struct DenKr_ContextBroker_ThreadArgPassing *)arg)->mainThreadID);
+	char debmode=(((struct DenKr_ContextBroker_ThreadArgPassing *)arg)->contbrok_debug);
 	free(arg);
 //	int err;
 
 	printf("\n");printfc(DENKR__COLOR_ANSI__THREAD_BASIC,"Thread <");printf("Context-Broker");printfc(DENKR__COLOR_ANSI__THREAD_BASIC,">:")
-	printf(" Starting...\n");
+	printf(" Starting...  (Debug-Mode: '%s')\n", debmode?"enabled":"disabled");
 
 	// Initialization of earliest required stuff
 	DenKr_HashTab_hash_table* hashtab_consumer;
@@ -728,7 +982,16 @@ void* DenKr_ContextBroker_thread(void* arg){
 	//--------------------------------------------------------------------------------------------------//
 	//==================================================================================================//
 	//----------------------------------------------------------------------------------------------
-	DenKr_ContextBroker(SockToBrok, hashtab_consumer, hashtab_producer, ownID, mainThreadID);
+	switch(debmode){
+	case 0:
+		DenKr_ContextBroker(SockToBrok, hashtab_consumer, hashtab_producer, ownID, mainThreadID);
+		break;
+	case 1:
+		DenKr_ContextBroker_DEBUG(SockToBrok, hashtab_consumer, hashtab_producer, ownID, mainThreadID);
+		break;
+	default:
+		break;
+	}
 
 
 

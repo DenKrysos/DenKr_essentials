@@ -283,12 +283,13 @@
 //		//An example of using this macro
 //		#define M(i, _) i
 //		STRINGIFY(EVAL(REPEAT(8, M, ~))) // 0 1 2 3 4 5 6 7
-//		   You define the past macro every time as macro_name(i, _).
+//		   You define the passed macro every time as macro_name(i, _).
 //		   This second argument '_' (and not used) "eats" expansion stuff away, if you don't need to pass
 //		   additional arguments. Look, what happens if you define the macro without arguments (and without argument-braces).
-//		   Otherwise, if your repeated macro needs more arguments define like this:
+//		   Otherwise, if your repeated macro needs more arguments, define like this:
 //		      #define M(i, Arg1) "do stuff, using Arg1 and maybe loop counter i"
 //		      STRINGIFY(EVAL(REPEAT(8, M, PassArgument)))
+//		//A bigger Example can be found inside "auxiliary.h" within the macro "CREATE_argv()"
 //---------------------------------------------------------------------
 #define WHILE(pred, op, ...) \
     IF(pred(__VA_ARGS__)) \

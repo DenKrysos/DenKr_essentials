@@ -79,11 +79,13 @@
 //----  Definitions  -------------------------------------------------------------------------------//
 //--------------------------------------------------------------------------------------------------//
 //==================================================================================================//
-typedef enum DenKr_plugins_working_type_t{
-		DenKr_plugin_working_type__undefined,
-		DenKr_plugin_working_type__generic,
-		DenKr_plugin_working_type__thread,
+#define DenKr_plugins_working_type_ENTRIES \
+		DenKr_plugin_working_type__undefined,\
+		DenKr_plugin_working_type__generic,\
+		DenKr_plugin_working_type__thread,\
 		DenKr_plugin_working_type__library
+typedef enum DenKr_plugins_working_type_t{
+	DenKr_plugins_working_type_ENTRIES
 }DenKr_plugins_working_type;
 typedef enum DenKr_plugins_interComm_method_t{
 	DenKr_plugin_interComm_method__infBroker,
@@ -153,6 +155,7 @@ typedef struct PluginManager_t{
 	struct PluginRoleGeneric* generic;
 	unsigned int generic_c;
 	PluginHandler* PluginHandler;
+	void* err;//Holds an Error-Code about the last operation on the PluginManager. NOTE: Currently this is NOT concurrent-operation- aka Thread-safe. Can be extended via instantiation
 }PluginManager;
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // - -   Flags   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -167,6 +170,28 @@ typedef struct PluginManager_t{
 //#define DENKR_PLUGINS_ROLE_FLAG__ 0x20
 //#define DENKR_PLUGINS_ROLE_FLAG__ 0x40
 //#define DENKR_PLUGINS_ROLE_FLAG__ 0x80
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// - -   ERROR Codes & Passing-Storage   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+typedef struct PluginManager_err_t{
+	int err;
+	DenKr_plugin_roles last_registered;
+}PluginManager_err;
+//  How they are supposed to work:
+//   - Before plugin Initialization & Registration, set the error to "No Register Function called yet". The register functions set this to "No Error" on proper run.
+//   - The register functions set the value to appropriate errors, if any.
+//   - After plugin loading, it can thus be checked
+//      - if the plugin called a Register Function at all
+//      - if the plugin set a correct role value and called the appropriate register function for this type
+//      - if the plugin did not set an invalid role value (i.e. if it set "not generic" but then a role value out of the range of predefined roles)
+//   - After an Plugin-Manager Operation and Error-Code Readout, the value is set to "Undefined"
+#define DENKR_PLUGMAN_ERR__UNDEFINED             0
+#define DENKR_PLUGMAN_ERR__NO_ERROR              1
+#define DENKR_PLUGMAN_ERR__GENERIC               2
+#define DENKR_PLUGMAN_ERR__REGPREDEF_BUTIS_GEN   INC(DENKR_PLUGMAN_ERR__GENERIC)
+#define DENKR_PLUGMAN_ERR__REGGEN_BUTIS_PREDEF   INC(DENKR_PLUGMAN_ERR__REGPREDEF_BUTIS_GEN)// aka DENKR_PLUGMAN_ERR__REGGEN_BUTIS_PREDEF
+#define DENKR_PLUGMAN_ERR__INVALID_ROLENUM       INC(DENKR_PLUGMAN_ERR__REGGEN_BUTIS_PREDEF)
+#define DENKR_PLUGMAN_ERR__NO_REGFUNC_CALLEDYET  INC(DENKR_PLUGMAN_ERR__INVALID_ROLENUM)
 //----------------------------------------------------------------------------------------------------
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 //--------------------------------------------------------------------------------------------------//
@@ -191,8 +216,9 @@ typedef struct PluginManager_t{
 //==================================================================================================//
 #define DENKR_PLUGIN_MANAGER_INIT_SIGNATURE void PluginManager_init(PluginManager** plugman)
 #define DENKR_PLUGIN_MANAGER_FREE_SIGNATURE void PluginManager_free(PluginManager** plugman)
+#define DENKR_PLUGIN_MANAGER_REM_LAST_GENERIC void PluginManager_rem_lastGeneric(PluginManager* plugman)
 #define DENKR_PLUGIN_MANAGER_REG_ROLE_PREDEF void PluginManager_register_role_predefined(PluginManager* plugman, DenKr_plugin_roles role, DenKr_plugins_working_type work_type, void* hook)
-#define DENKR_PLUGIN_MANAGER_REG_ROLE_GENERIC void PluginManager_register_role_generic(PluginManager* plugman, char* role, int role_size, DenKr_plugins_working_type work_type, void* work_type_generic, DenKr_plugins_interComm_method interComm_method, void* hook)
+#define DENKR_PLUGIN_MANAGER_REG_ROLE_GENERIC void PluginManager_register_role_generic(PluginManager* plugman, DenKr_plugin_roles roletype, char* role, int role_size, DenKr_plugins_working_type work_type, void* work_type_generic, DenKr_plugins_interComm_method interComm_method, void* hook)
 //----------------------------------------------------------------------------------------------------
 #ifndef NO_DENKR_ESSENTIALS__PLUGINS__PLUGIN_MANAGEMENT_C_FUNCTIONS
 extern DENKR_PLUGIN_MANAGER_INIT_SIGNATURE;

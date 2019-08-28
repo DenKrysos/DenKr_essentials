@@ -70,7 +70,7 @@
 
 
 //static int DL_Libs_plugins_load_plugin(PluginManager* plugman, char* full_path, int full_path_len, char* plug_name, int plug_name_len){
-static int DL_Libs_plugins_load_plugin(PluginManager* plugman, char* full_path, char* plug_name, int plug_name_len){
+static int DL_Libs_plugins_load_plugin(PluginManager* plugman, char* full_path, char* plug_name, int plug_name_len, char* testp){
 	#define PRNT_INDENT printf("    ");
 	int err=0;
 	int i;
@@ -94,12 +94,58 @@ static int DL_Libs_plugins_load_plugin(PluginManager* plugman, char* full_path, 
 		return DL_LIBS__ERR__NO_INIT_FUNC;
 	}
 
-	int returned_role = initfunc(plugman);
-	if(returned_role < 0){
-		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" Executing Plugin init_ function returned Error: %d\n", returned_role);
+	plugman->err=malloc(sizeof(PluginManager_err));
+	((PluginManager_err*)(plugman->err))->err=DENKR_PLUGMAN_ERR__NO_REGFUNC_CALLEDYET;//reset Plugman-Error. Check its value after Operation on the Plugman. See "plugin_management.h" for instructions
+	int init_ret = initfunc(plugman);
+	int returned_role=((PluginManager_err*)(plugman->err))->last_registered;
+	err=((PluginManager_err*)(plugman->err))->err;
+	free(plugman->err);
+	plugman->err=NULL;
+	//  Remark that 'dlfcn' returns a negative value if something went wrong.
+	if(init_ret < 0){
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" Executing Plugin init_ function returned Error: %d  |  DenKr-Plugin-Manager Error-Code: %d\n", returned_role, ((PluginManager_err*)(plugman->err))->err);
 		dlclose(libhandle);
 		return DL_LIBS__ERR__NO_INIT_ERR;
 	}
+	//TODO: Here will then the Calls of the registration functions be inserted, after the rework mentioned in the Cloud-Textfile "DenKrement_ToDo.txt"
+	//
+	switch(err){
+	case DENKR_PLUGMAN_ERR__NO_ERROR:
+	case DENKR_PLUGMAN_ERR__GENERIC:
+		err=0;
+		break;
+	case DENKR_PLUGMAN_ERR__REGPREDEF_BUTIS_GEN:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" Tried to register as predefined Role, but with generic Role.\n");
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NOT_LOADED;
+		break;
+	case DENKR_PLUGMAN_ERR__REGGEN_BUTIS_PREDEF:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" Tried to register as generic Role Plugin, with a predefined Role Type.\n");
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NOT_LOADED;
+		break;
+	case DENKR_PLUGMAN_ERR__INVALID_ROLENUM:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" Library tried to register with an invalid (out of range) Role Number. I.e. not as generic and also out of domain-of-definition of the specified predefined Plugin Roles.\n");
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NOT_LOADED;
+		break;
+	case DENKR_PLUGMAN_ERR__NO_REGFUNC_CALLEDYET:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," ERROR:");printf(" While executing init function: No Registration called.\n");
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NO_INIT_FUNC;
+		break;
+	case DENKR_PLUGMAN_ERR__UNDEFINED:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(red," ERROR:");printf(" During Plugin Initialization (init_ function). Hmm, an explicitly stated \"UNDEFINED\" DenKr-PluginManager error was thrown. Very strange... OK, I just skip this file and we all hope that this was not caused by a general Framework Programming Bug...\n");
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NOT_LOADED;
+		break;
+	default:
+		PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(red," ERROR:");printf(" Plugin Initialization returned unknown DenKr-PluginManager-Error: %d\n", ((PluginManager_err*)(plugman->err))->err);
+		dlclose(libhandle);
+		return DL_LIBS__ERR__NO_INIT_ERR;
+		break;
+	}
+	//- - - - - - - - - - - -
 	//Now everything should be done correctly and initialized successfully.
 	    //At last use the returned role, to record the generated Library-Handler into the PluginHandler inside the PluginManager
 	if(returned_role==DenKr_plugin_role__generic){
@@ -147,7 +193,7 @@ DENKR_DL_LIBS_PLUGIN_DISCOVER_FOLDER_SIGNATURE {
 
 	printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printf(" Loading Plugins (only considering \".so\"-Files)...\n");
 
-	#define CREATE_PRINTABLE_ROLES_ARRAY		CREATE_argv_CONST(print_roles, CALL_MACRO_X_FOR_EACH__LIST(STRINGIFY,DenKr_plugin_roles_ENTRIES) )
+	#define CREATE_PRINTABLE_ROLES_ARRAY		CREATE_argv_CONST(print_roles, CALL_MACRO_X_FOR_EACH__LIST(STRINGIFY,DenKr_plugin_roles_ENTRIES_) )
 	CREATE_PRINTABLE_ROLES_ARRAY;
 	#undef CREATE_PRINTABLE_ROLES_ARRAY
 	printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printf(" Specific Roles provided by the Application:\n");
@@ -183,11 +229,14 @@ DENKR_DL_LIBS_PLUGIN_DISCOVER_FOLDER_SIGNATURE {
 	}
 
 	while( (direntry = readdir(dir)) != NULL ){
+//		depr(1,"dir_path (%d) %s",dir_path_len,dir_path)
+//		depr(1,"direntry->d_name (%d) %s",strlen(direntry->d_name),direntry->d_name)
 		int ent_fullpath_len = dir_path_len+strlen(direntry->d_name);
 		char ent_fullpath[ent_fullpath_len+1];
 		memcpy(ent_fullpath,dir_path,dir_path_len);
 		memcpy(ent_fullpath+dir_path_len,direntry->d_name,strlen(direntry->d_name));
 		ent_fullpath[ent_fullpath_len]='\0';
+//		depr(5,"%s",ent_fullpath)
 	    if (stat(ent_fullpath, &ent_stat)) {
 	    	PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(red," ERROR:");printf(" Couldn't get Dir-Entry stats: %s.\n",ent_fullpath);
 	        exit(8);
@@ -226,7 +275,7 @@ DENKR_DL_LIBS_PLUGIN_DISCOVER_FOLDER_SIGNATURE {
 			plug_name[plug_name_len]='\0';
 //			err=DL_Libs_plugins_load_plugin(plugman,ent_fullpath,ent_fullpath_len,plug_name,plug_name_len);
 			PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printf(" Tackling to load File as Module (Library/Thread): %s.\n",direntry->d_name);
-			err=DL_Libs_plugins_load_plugin(plugman,ent_fullpath,plug_name,plug_name_len);
+			err=DL_Libs_plugins_load_plugin(plugman,ent_fullpath,plug_name,plug_name_len,dir_path);
 			switch(err){
 			case 0:
 				//Successful, nothing further to do.
@@ -237,6 +286,10 @@ DENKR_DL_LIBS_PLUGIN_DISCOVER_FOLDER_SIGNATURE {
 				break;
 			case DL_LIBS__ERR__NO_INIT_FUNC:
 				PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," WARNING:");printf(" Library supplied no init_ function. Skip File: %s.\n",direntry->d_name);
+				goto SkipFile;
+				break;
+			case DL_LIBS__ERR__NO_REGISTER_FUNC:
+				PRNT_INDENT printfc(DENKR__COLOR_ANSI__DL_LIBS,"DL-Libs:");printfc(yellow," WARNING:");printf(" Library supplied no proper init_ function (Plugin-Registration Function missing). Skip File: %s.\n",direntry->d_name);
 				goto SkipFile;
 				break;
 			case DL_LIBS__ERR__NO_INIT_ERR:
