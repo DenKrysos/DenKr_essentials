@@ -10,6 +10,7 @@
 
 
 #include "DenKr_essentials/PreC/DenKr_PreC.h"
+#include "plugins/export/plugins_DenKr_essentials__common.h"
 
 
 
