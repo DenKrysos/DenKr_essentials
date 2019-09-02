@@ -56,8 +56,8 @@
 //#include "function_creator.h"
 //#include "getRealTime.h"
 //#include "Program_Files/P_Files_Path.h"
-#include "DenKr_essentials/Plugins/plugin_management.h"
-#include "DenKr_essentials/Plugins/plugin_discovery.h"
+#include "plugin_management.h"
+#include "plugin_discovery.h"
 //==================================================================================================//
 //==================================================================================================//
 //////////////////////////////////////////////////////////////////////////////////////////////////////

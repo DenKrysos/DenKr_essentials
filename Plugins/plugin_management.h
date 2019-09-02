@@ -62,6 +62,7 @@
 //#include "getRealTime.h"
 //#include "Program_Files/P_Files_Path.h"
 #include "DenKr_essentials/Types/multi_threading_basicTypes.h"
+#include "plugin_codeGeneration.h"//Include Order matters (that is, all the defines have to stand before the enum declaration at the end of this file). Thus, the "plugin_codeGeneration.h" needs to be included AFTER the "<MainApp>/plugins/export/plugins_DenKr_essentials__common.h"
 //==================================================================================================//
 //==================================================================================================//
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -92,6 +93,8 @@ typedef enum DenKr_plugins_interComm_method_t{
 	DenKr_plugin_interComm_method__ShMem,
 	DenKr_plugin_interComm_method__socket
 }DenKr_plugins_interComm_method;
+//TODO: Include: __pipe, __stack
+//TODO: Make them not mutually exclusive. Change them to Flags and use a Flag-Holder?
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // - -   Signatures   - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

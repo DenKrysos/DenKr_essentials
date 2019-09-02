@@ -148,6 +148,7 @@
 #include "DenKr_essentials/Plugins/plugin_discovery.h"
 #include "DenKr_essentials/Plugins/plugin_management.h"
 #include "DenKr_essentials/Plugins/plugin_database.h"
+#include "DenKr_essentials/Plugins/plugin_codeGeneration.h"
 //---------------------------------------------------------------------------------
 //#include "../PreC/DenKr_PreC.h"
 //#include "../DenKr_errno.h"

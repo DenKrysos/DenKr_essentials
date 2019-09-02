@@ -72,8 +72,16 @@
 //#include "getRealTime.h"
 //#include "Program_Files/P_Files_Path.h"
 //---------------------------------------------------------------------------------
-//TODO: Change this file-include to the proper one after rework like mentioned in this "DenKrement_threads.h"
-#include "DenKrement_threads.h"
+#if defined(DENKR_ESSENTIALS__DL_LIBS__NONE)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__MAIN_APP)
+//	#include "threads_codeGeneration.h"
+	#include "DenKr/DenKr_threads.h"
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_PREDEFINED)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_GENERIC)
+#else
+	#pragma error "ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+	ERROR"ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+#endif
 //----------------------------------------------------------------------------
 #if defined(DENKR_ESSENTIALS__DL_LIBS__NONE)
 #elif defined(DENKR_ESSENTIALS__DL_LIBS__MAIN_APP)
@@ -189,7 +197,8 @@
 //   Data-Source-Thread:
 //     [Prepare your message. E.g. write into a buffer or ready your variables]
 //     ShMem_send_start(&ShMemArray[TargetThreadID], 24, SHMEM_MSGTYPE_NEW_CTRL_MSG)
-//     [Fill in Flags (if any)]
+//     [Fill in Flags (if any)]  --  e.g. "FLAG_SET(shmem_headers[mainID].flags,SHMEM_MSG_FLAG__SRC_VALID);"
+//     [Set '.src'-Value (if used in your Comm-Protocol)]  --  e.g. "shmem_headers[mainID].src = ownID;"
 //     [Write - i.e. memcpy, snprintf, Variable-pointer-based-write or whatever - into the space after "ShMemArray[TargetThreadID]->ShMem"]
 //     ShMem_send_finish(&(ShMemArray[TargetThreadID]));
 //   Data-Sink-Thread (Target) (TargetThreadID is its own ID):
@@ -506,6 +515,7 @@ DenKr_Threads_GenericEntry* DenKr_ThreadSpawn_Tracking_Generic_AddEntry(DenKr_Th
 //This function removes an Entry from the LinkedList, if one with the passed Index exists.
 // If there is no Entry with this Index it just does nothing, except wasting CPU-Time while traversing the list xD.
 // To save CPU-Time the function only removes the FIRST FOUND ENTRY and then returns. Don't add several Entries with the same Idx.
+//TODO: different return-Value, when no entry with this ID was found. Why the heck haven't I done this rightaway?
 int DenKr_ThreadSpawn_Tracking_Generic_RemoveEntry(DenKr_Threads_Generic* threadsll, DenKr_essentials_ThreadID idx){
 	int i;
 
@@ -836,6 +846,9 @@ DENKR_THREAD_STARTTHREAD_PREDEFINED//(long long predefplug_roleid, long long pre
 	return err;
 }
 
+#if defined(DENKR_ESSENTIALS__DL_LIBS__NONE)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__MAIN_APP)
+
 //Here keep track over all predefined roles and their corresponding thread-indices. I.e. circle over all predefined role IDs and also pass their thread-indices and the gathers the additional arguments and passes them.
 DENKR_THREAD_START_PREDEFINEDS
 {
@@ -843,7 +856,7 @@ DENKR_THREAD_START_PREDEFINEDS
 		int i;
 		CREATE_argv_CONST(predef_v, CALL_MACRO_X_FOR_EACH__LIST(STRINGIFY,DenKr_plugin_roles_ENTRIES) )
 		long long plugin_roles[]={DenKr_plugin_roles_ENTRIES_};
-		long long thread_idc[]={DenKrement_Thread_Plugin_ENTRIES_};
+		long long thread_idc[]={DenKr_Thread_Plugin_ENTRIES_};
 		for(i=0;i<DenKr_plugin_role__MAX;i++){
 			DenKr_Thread_startThread_predefined(plugman, thrall, mainThreadID, shmem_headers, SockToBrok, plugin_roles[i],thread_idc[i],addarg_arr[i].addArgs,addarg_arr[i].addarg_siz,predef_v[i]);
 		}
@@ -851,6 +864,13 @@ DENKR_THREAD_START_PREDEFINEDS
 
 	return 0;
 }
+
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_PREDEFINED)
+#elif defined(DENKR_ESSENTIALS__DL_LIBS__PLUGIN_GENERIC)
+#else
+	#pragma error "ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+	ERROR"ERROR: Define either DENKR_ESSENTIALS__DL_LIBS__MAIN_APP or DENKR_ESSENTIALS__DL_LIBS__PLUGIN inside <global/global_settings.h>"
+#endif
 
 //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Additional Arg preparation
